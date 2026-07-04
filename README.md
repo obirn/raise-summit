@@ -1,4 +1,4 @@
-# Docklock Split Apps
+# raise-summit
 
 Two focused apps live in this workspace:
 
