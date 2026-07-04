@@ -1,4 +1,5 @@
 import { useCustomsRequirements } from '../hooks/useCustomsRequirements'
+import { CustomsDecisionRegister } from '../tabs/CustomsDecisionRegister'
 import { CustomsICS2 } from '../tabs/CustomsICS2'
 import {
   deriveTmsStatus,
@@ -27,16 +28,19 @@ export function CustomsWebApp() {
   }
 
   return (
-    <CustomsICS2
-      state={sandbox}
-      validHsCode={VALID_HS_CODE}
-      requirements={customsRequirements.requirements}
-      primaryRequirementsAccepted={customsRequirements.primaryRequirementsAccepted}
-      onAddRequirement={customsRequirements.addRequirement}
-      onHsCodeChange={updateHsCode}
-      onResetRequirements={customsRequirements.resetRequirements}
-      onRequirementDocumentUpload={customsRequirements.uploadRequirementDocument}
-      onValidate={validateCustoms}
-    />
+    <div className="min-h-screen bg-ics2-paper pt-4">
+      <CustomsDecisionRegister />
+      <CustomsICS2
+        state={sandbox}
+        validHsCode={VALID_HS_CODE}
+        requirements={customsRequirements.requirements}
+        primaryRequirementsAccepted={customsRequirements.primaryRequirementsAccepted}
+        onAddRequirement={customsRequirements.addRequirement}
+        onHsCodeChange={updateHsCode}
+        onResetRequirements={customsRequirements.resetRequirements}
+        onRequirementDocumentUpload={customsRequirements.uploadRequirementDocument}
+        onValidate={validateCustoms}
+      />
+    </div>
   )
 }

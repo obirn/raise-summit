@@ -1,0 +1,11 @@
+# Unblock agent control plane (Python 3.12)
+google-genai>=2.10          # Gemini (Computer Use + Live voice)
+fastapi                     # orchestrator + voice bridge
+uvicorn                     # ASGI server
+websockets                  # live board stream + Twilio media stream
+pydantic                    # data shapes
+python-dotenv               # .env secrets
+sqlmodel                    # SQLite board (invariant 4)
+playwright                  # Computer Use browser harness (headful demo)
+tenacity                    # CU self-heal / retry
+audioop-lts; python_version>="3.13"   # audio transcode (stdlib audioop removed in 3.13)

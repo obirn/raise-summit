@@ -10,6 +10,9 @@ export default defineConfig({
       input: {
         customs: resolve(__dirname, 'index.html'),
         tms: resolve(__dirname, 'tms.html'),
+        ui: resolve(__dirname, 'ui.html'),
+        carrier: resolve(__dirname, 'carrier.html'),
+        terminal: resolve(__dirname, 'terminal.html'),
       },
     },
   },
