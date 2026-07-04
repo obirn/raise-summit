@@ -1,0 +1,38 @@
+{
+  "name": "apithakathon",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "npm run dev:customs",
+    "dev:customs": "vite",
+    "dev:tms": "node scripts/dev-tms-electron.mjs",
+    "build": "tsc -b && vite build",
+    "build:customs": "npm run build",
+    "build:tms": "npm run build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "preview:customs": "vite preview",
+    "start:tms": "electron electron/main.cjs",
+    "desktop:tms": "npm run build:tms && npm run start:tms"
+  },
+  "dependencies": {
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "autoprefixer": "^10.5.2",
+    "electron": "^43.0.0",
+    "oxlint": "^1.71.0",
+    "postcss": "^8.5.16",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  }
+}
