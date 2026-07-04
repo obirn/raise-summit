@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from ..audit.artifacts import ARTIFACTS_DIR
 
 from ..board.board import Board
-from ..board.models import AlertKind
+from ..board.models import AlertKind, FieldTruth
 from ..computer_use.base import ComputerUse
 from ..computer_use.stub import StubComputerUse
 from ..monitoring.engine import tick
@@ -121,7 +121,51 @@ def dismiss(body: DismissBody) -> dict:
 
 @app.post("/events/call", status_code=202)
 def inbound_call(body: CallBody) -> dict:
+    """Pull path — scripted demo. The real telephony bridge uses the push
+    endpoints below instead."""
     engine.on_call(hint=body.container_id)
+    return {"accepted": True}
+
+
+# ---- push path: the Twilio bridge is the only caller of these ---------------
+class FieldTruthBody(BaseModel):
+    container_id: str
+    reference: str
+    blocker_type: str = "unpaid_detention"
+    lang: str = "es"
+    raw_transcript: str = ""
+
+
+class CallStartedBody(BaseModel):
+    container_id: str | None = None
+
+
+class TranscriptBody(BaseModel):
+    container_id: str | None = None
+    speaker: str
+    text: str
+
+
+@app.post("/events/field-truth", status_code=202)
+def field_truth(body: FieldTruthBody) -> dict:
+    """A real driver call yielded the exact reference. Drives the same flow as
+    the scripted demo: targeted terminal read -> surfaced line -> human gate."""
+    engine.ingest_field_truth(FieldTruth(
+        container_id=body.container_id, blocker_type=body.blocker_type,
+        reference=body.reference, lang=body.lang, raw_transcript=body.raw_transcript,
+    ))
+    return {"accepted": True}
+
+
+@app.post("/events/call-started", status_code=202)
+def call_started(body: CallStartedBody) -> dict:
+    manager.broadcast(ev.call_started(body.container_id))
+    return {"accepted": True}
+
+
+@app.post("/events/transcript", status_code=202)
+def transcript(body: TranscriptBody) -> dict:
+    manager.broadcast(ev.transcript(body.container_id, body.speaker, body.text))
     return {"accepted": True}
 
 

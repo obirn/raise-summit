@@ -5,6 +5,7 @@ uvicorn                     # ASGI server
 websockets                  # live board stream + Twilio media stream
 pydantic                    # data shapes
 python-dotenv               # .env secrets
+httpx                       # voice bridge -> orchestrator notifications
 sqlmodel                    # SQLite board (invariant 4)
 playwright                  # Computer Use browser harness (headful demo)
 tenacity                    # CU self-heal / retry

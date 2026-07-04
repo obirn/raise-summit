@@ -78,7 +78,17 @@ model drove the browser through the **full golden path** (reads all 4 portals �
 without the reference (invariant 6). `make demo` (stub) / `make demo-cu` (real CU) / `make cu-smoke`
 (one live CU read). `make golden` + `make test` (**9/9**) stay on the stub — deterministic, offline.
 
-**M3 (next):** integrate the `twilio` voice branch + scripted fallback.
+**M3 status (built + tested):** real **Live Translate** — the phone-tested Twilio↔Gemini-Live
+bridge relocated to [agent/voice/twilio_bridge.py](agent/voice/twilio_bridge.py) + [gate.py](agent/voice/gate.py)
+(Gemini Live `gemini-3.1-flash-live-preview`, lazy client). It's a *push* path: on the driver's
+`flag_blocked_at_gate` tool-call it POSTs `/events/field-truth` to the orchestrator, which runs the
+same flow as the scripted demo (targeted terminal read → surfaced line → human gate); it also POSTs
+`/events/call-started` + `/events/transcript` (live ES↔EN in the Site Office). `engine.on_call`
+(pull/`StubVoice`, offline default) and `ingest_field_truth` (push) converge on one method. Run:
+`make voice` (`:8080`) + ngrok + Twilio webhook (`DEMO-ONLY`). Verified: live push path
+`field-truth → resolving`; `make test` **12/12** stays offline on the stub.
+
+**M4 (next):** audit polish, MASTER_PROMPT.md, hardening; optional real `voice.callback`.
 
 ---
 

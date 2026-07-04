@@ -1,7 +1,7 @@
 # Unblock — one-command demo control (see CLAUDE.md).
 # Targets delegate to scripts/ which activate the Python venv + Node (nvm).
 SHELL := /usr/bin/env bash
-.PHONY: setup demo demo-cu golden reset kill resume test build lint cu-smoke
+.PHONY: setup demo demo-cu golden reset kill resume test build lint cu-smoke voice
 
 setup:  ## install Python + Node deps + Playwright Chromium
 	. scripts/env.sh && pip install -q -r requirements.txt && \
@@ -15,6 +15,10 @@ demo-cu: ## same as demo but with REAL Gemini Computer Use (needs GEMINI_API_KEY
 
 cu-smoke: ## one live CU read of the terminal portal (needs the Vite server running)
 	. scripts/env.sh && python scripts/cu_smoke.py
+
+voice:  ## run the Twilio<->Gemini-Live bridge (:8080). DEMO-ONLY: needs ngrok + a Twilio number
+	. scripts/env.sh && uvicorn agent.voice.twilio_bridge:app --host 0.0.0.0 --port 8080
+	@echo "Expose with: ngrok http 8080 ; point the Twilio number's Voice webhook at https://<ngrok>/voice"
 
 golden: ## drive the golden path 1->9 (incl. live kill/resume) via the public API
 	bash scripts/golden.sh

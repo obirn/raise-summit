@@ -170,3 +170,16 @@ def test_cu_goal_builder_targets_reference():
     pay = _goal(Task(kind=TaskKind.act, target_system=System.terminal, goal="",
                      params={"container_id": "MSKU4471", "reference": "DET-4471-B"}))
     assert "Pay & release" in pay
+
+
+# --- M3: real-voice push entrypoint (stub CU, offline) ----------------------
+def test_ingest_field_truth_surfaces_detention(engine):
+    """A FieldTruth from a real driver call drives the same flow as the scripted
+    demo: voice blocker + targeted terminal read reveals $340 -> awaiting_action."""
+    from agent.board.models import FieldTruth
+    c = engine.ingest_field_truth(FieldTruth(
+        container_id="MSKU4471", blocker_type="unpaid_detention",
+        reference="DET-4471-B", lang="es", raw_transcript="driver at the gate"))
+    assert c.status == ContainerStatus.awaiting_action
+    assert any(b.discovered_via == DiscoveredVia.voice for b in c.blockers)
+    assert "$340" in c.pending_action.line and "Driver waiting" in c.pending_action.line

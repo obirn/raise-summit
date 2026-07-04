@@ -23,6 +23,7 @@ from ..board.models import (
     ContainerStatus,
     CostClass,
     DiscoveredVia,
+    FieldTruth,
     Observation,
     PendingAction,
     System,
@@ -180,8 +181,9 @@ class Engine:
         return c
 
     def on_call(self, hint: str | None = None) -> Container:
-        """EVENT (driver call): extract FieldTruth, write a voice Blocker, then a
-        targeted terminal read WITH the reference reveals the hidden detention."""
+        """EVENT — the *pull* path (scripted demo). Ask the voice channel for the
+        FieldTruth, then ingest it. The real telephony bridge uses the *push*
+        path (`ingest_field_truth`) instead; both converge on the same logic."""
         self._emit(events.call_started(None))
         # container id is only known once the driver states it; stream transcript
         # to the UI as it arrives (unattached until we learn the id).
@@ -191,8 +193,15 @@ class Engine:
             self._emit(events.transcript(heard["cid"], speaker, text))
 
         truth = self.voice.take_call(hint=hint, on_transcript=_sink)
+        heard["cid"] = truth.container_id
+        return self.ingest_field_truth(truth)
+
+    def ingest_field_truth(self, truth: FieldTruth) -> Container:
+        """EVENT — the *push* entrypoint. Given a FieldTruth (from the scripted
+        stub OR a real driver call via the Twilio bridge), write the voice Blocker
+        and run a targeted terminal read WITH the reference, which reveals the
+        hidden detention on screen (invariant 6)."""
         c = self._require(truth.container_id)
-        heard["cid"] = c.id
         self._emit(events.call_started(c.id))
         voice_blocker = Blocker(
             source_system=System.terminal, type=truth.blocker_type,
