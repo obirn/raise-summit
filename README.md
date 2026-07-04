@@ -50,15 +50,34 @@ For hackathon demo mode where HITL confirmations are automatically approved:
 docklock --auto-approve-hitl
 ```
 
+To send HITL alerts to a dashboard WebSocket:
+
+```bash
+docklock --hitl-websocket-url ws://localhost:8787/hitl
+```
+
 ## Safety Gates
 
-Docklock implements four defensive checks:
+Docklock implements defense-in-depth safety checks:
 
 - Native Gemini `safety_decision`: `blocked` halts; `require_confirmation` pauses for HITL approval.
 - DOM coordinate resolution: `document.elementFromPoint()` maps normalized model coordinates to a real DOM target before clicking.
-- High-risk keyword intercept: clicks on text like `pay`, `submit`, `validate & re-submit`, `delete`, and `override` require approval.
-- HS-code sanitation: Customs Portal typing is constrained to `dddd.dd.dd`; conversational strings are reduced to the valid tariff code when possible.
+- High-risk keyword intercept: clicks on text like `pay`, `submit`, `validate & re-submit`, `delete`, `override`, and `confirm` require approval.
+- HS-code sanitation and allowlisting: Customs Portal typing is constrained to `dddd.dd.dd` and must match the approved company catalog, currently `8517.13.00`.
+- Physical manifest lock: `vgmWeight`, `sealNumber`, and `containerId` cannot be edited by the AI, even when it finds a TMS/Carrier discrepancy.
+- Terminal payment reconciliation: payment buttons trigger invoice scraping and local PO ledger matching. Docklock authorizes only the expected `$340.00` detention fee by default, so an extra `$125.00` X-Ray fee pauses for HITL.
+- Network boundary enforcement: both the Safety Gate and Playwright wrapper block navigation outside the configured local demo origins.
 - Checker-corrector loop: post-action DOM error banners are sent back to Gemini, with a circuit breaker after 3 repeated errors.
 
-See [docs/architecture.md](/Users/mac/Documents/SafetyLayer/docs/architecture.md) for implementation details.
+Every pause emits a dashboard-ready HITL payload:
 
+```json
+{
+  "status": "PAUSED_FOR_HITL",
+  "container_id": "MSKU4471",
+  "intercept_reason": "UNBUDGETED_FEE_DETECTED",
+  "required_action": "1-TAP_HUMAN_APPROVAL"
+}
+```
+
+See [docs/architecture.md](/Users/mac/Documents/SafetyLayer/docs/architecture.md) for implementation details.

@@ -6,15 +6,26 @@ import sys
 
 from .brain_controller import CircuitBreakerError, GeminiComputerUseBrain
 from .browser_hands import BrowserHands, NavigationBlockedError
-from .safety_gate import AutoApprovalProvider, SafetyBlockedError, SafetyGate, TerminalApprovalProvider
+from .safety_gate import (
+    AutoApprovalProvider,
+    SafetyBlockedError,
+    SafetyGate,
+    TerminalApprovalProvider,
+    WebSocketApprovalProvider,
+)
 
 
 DEFAULT_GOAL = "Analyze container MSKU4471 across all tabs and resolve any holds."
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    approval = AutoApprovalProvider() if args.auto_approve_hitl else TerminalApprovalProvider()
-    gate = SafetyGate(approval)
+    if args.hitl_websocket_url:
+        approval = WebSocketApprovalProvider(args.hitl_websocket_url)
+    elif args.auto_approve_hitl:
+        approval = AutoApprovalProvider()
+    else:
+        approval = TerminalApprovalProvider()
+    gate = SafetyGate(approval, allowed_origins=tuple(args.allowed_origin))
 
     async with BrowserHands(
         start_url=args.start_url,
@@ -59,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--viewport-height", type=int, default=900)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument(
+        "--hitl-websocket-url",
+        help="Dashboard WebSocket URL that receives PAUSED_FOR_HITL alerts and returns {\"approved\": true}.",
+    )
+    parser.add_argument(
         "--auto-approve-hitl",
         action="store_true",
         help="Auto-approve human checkpoints. Use only for controlled demos.",
@@ -81,4 +96,3 @@ def cli() -> None:
 
 if __name__ == "__main__":
     cli()
-

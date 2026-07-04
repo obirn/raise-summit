@@ -117,10 +117,15 @@ class BrowserHands:
               const attrs = {};
               for (const name of [
                 'id', 'class', 'name', 'type', 'role', 'aria-label',
-                'value', 'href', 'placeholder', 'data-action', 'data-testid'
+                'value', 'href', 'placeholder', 'data-action', 'data-testid',
+                'data-field', 'data-portal'
               ]) {
                 const value = actionable.getAttribute(name);
                 if (value) attrs[name] = value;
+              }
+              if (actionable.id) attrs.id = actionable.id;
+              if (actionable.className && typeof actionable.className === 'string') {
+                attrs.class = actionable.className;
               }
 
               const rawText = actionable.innerText ||
@@ -244,6 +249,46 @@ class BrowserHands:
     async def visible_text(self) -> str:
         return await self._page.evaluate("document.body ? document.body.innerText : ''")
 
+    async def extract_invoice_line_items(self) -> list[dict[str, Any]]:
+        """Extract visible invoice-like line items with dollar amounts from the current page."""
+
+        return await self._page.evaluate(
+            """
+            () => {
+              const moneyPattern = /\\$\\s*\\d{1,3}(?:,\\d{3})*(?:\\.\\d{2})?/g;
+              const candidates = [
+                ...document.querySelectorAll(
+                  'tr, li, [data-invoice-line], [data-line-item], .invoice-line, .line-item'
+                )
+              ];
+
+              const rows = candidates.length ? candidates : [document.body];
+              const items = [];
+              for (const row of rows) {
+                const text = (row.innerText || row.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (!text) continue;
+
+                const amounts = text.match(moneyPattern) || [];
+                for (const amountText of amounts) {
+                  const amount = Number(amountText.replace(/[$,\\s]/g, ''));
+                  const label = text.replace(amountText, '').replace(/[:|\\-]+$/g, '').trim();
+                  items.push({label, amount, amount_text: amountText});
+                }
+              }
+
+              const deduped = [];
+              const seen = new Set();
+              for (const item of items) {
+                const key = `${item.label}|${item.amount}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                deduped.push(item);
+              }
+              return deduped;
+            }
+            """
+        )
+
     async def inspect_errors(self) -> str | None:
         errors = await self._page.evaluate(
             """
@@ -271,4 +316,3 @@ class BrowserHands:
             """
         )
         return str(errors) if errors else None
-

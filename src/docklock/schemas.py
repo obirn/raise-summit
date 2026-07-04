@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any, Iterable
 
 
@@ -19,7 +20,11 @@ class ActionCommand:
     @property
     def safety_decision(self) -> dict[str, Any] | None:
         decision = self.arguments.get("safety_decision")
-        return decision if isinstance(decision, dict) else None
+        if isinstance(decision, dict):
+            return decision
+        if isinstance(decision, str):
+            return {"decision": decision}
+        return None
 
     def with_arguments(self, **updates: Any) -> "ActionCommand":
         args = dict(self.arguments)
@@ -48,6 +53,64 @@ class GateDecision:
     safety_acknowledgement: bool = False
     dom_target: DomTarget | None = None
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class HitlAlert:
+    status: str
+    timestamp: str
+    container_id: str
+    intercept_reason: str
+    gemini_proposal: dict[str, Any]
+    dom_resolution: dict[str, Any]
+    business_context: str
+    required_action: str = "1-TAP_HUMAN_APPROVAL"
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        container_id: str,
+        intercept_reason: str,
+        command: ActionCommand,
+        business_context: str,
+        dom_target: DomTarget | None = None,
+        target_portal: str = "Unknown Portal",
+        native_safety_decision: str = "regular",
+    ) -> "HitlAlert":
+        coordinates: dict[str, int] = {}
+        if "x" in command.arguments and "y" in command.arguments:
+            coordinates = {"x": int(command.arguments["x"]), "y": int(command.arguments["y"])}
+
+        return cls(
+            status="PAUSED_FOR_HITL",
+            timestamp=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            container_id=container_id,
+            intercept_reason=intercept_reason,
+            gemini_proposal={
+                "action": command.name,
+                "coordinates": coordinates,
+                "native_safety_decision": native_safety_decision,
+            },
+            dom_resolution={
+                "element_tag": dom_target.tag.upper() if dom_target else "",
+                "element_text": dom_target.text if dom_target else "",
+                "target_portal": target_portal,
+            },
+            business_context=business_context,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "timestamp": self.timestamp,
+            "container_id": self.container_id,
+            "intercept_reason": self.intercept_reason,
+            "gemini_proposal": self.gemini_proposal,
+            "dom_resolution": self.dom_resolution,
+            "business_context": self.business_context,
+            "required_action": self.required_action,
+        }
 
 
 @dataclass(frozen=True)
@@ -99,4 +162,3 @@ def collect_model_text(interaction: Any) -> str:
             if _get_field(block, "type") == "text":
                 chunks.append(str(_get_field(block, "text", "")))
     return " ".join(chunk for chunk in chunks if chunk).strip()
-
