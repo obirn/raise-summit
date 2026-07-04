@@ -1,0 +1,6 @@
+google-genai>=1.0
+websockets
+fastapi
+uvicorn
+python-dotenv
+audioop-lts; python_version>="3.13"
