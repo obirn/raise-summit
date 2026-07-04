@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    container_name: raise-summit-api
+    environment:
+      DATABASE_URL: postgresql+psycopg://raise_summit:raise_summit@db:5432/raise_summit
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: raise-summit-db
+    ports:
+      - "6789:5432"
+    environment:
+      POSTGRES_DB: raise_summit
+      POSTGRES_USER: raise_summit
+      POSTGRES_PASSWORD: raise_summit
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raise_summit -d raise_summit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
