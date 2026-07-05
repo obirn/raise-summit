@@ -33,8 +33,18 @@ from .gate import flag_blocked_at_gate
 
 load_dotenv()  # charge .env (secrets Gemini/Twilio) — cf. CLAUDE.md
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Logging robuste : basicConfig est un no-op sous le CLI uvicorn (uvicorn possède
+# déjà des handlers), donc on attache explicitement un handler au logger "bridge"
+# pour être sûr de voir les logs quel que soit le mode de lancement.
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()  # LOG_LEVEL=DEBUG pour tout tracer
+logging.basicConfig(level=_LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("bridge")
+logger.setLevel(_LOG_LEVEL)
+if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+logger.propagate = False  # évite les doublons via le root/uvicorn
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 ORCH_URL = os.environ.get("ORCH_URL", "http://localhost:5000")  # orchestrateur (contrat interne)
@@ -213,25 +223,31 @@ async def _bridge_call(websocket: WebSocket) -> None:
     resample_state = {"in": None, "out": None}
     resumption_handle = None
     call_active = True
+    session_i = 0
 
     while call_active:
+        session_i += 1
         try:
+            logger.info("Ouverture session Gemini #%d callSid=%s (reprise=%s)",
+                        session_i, call_sid, bool(resumption_handle))
             async with get_client().aio.live.connect(
                 model=GEMINI_MODEL, config=_live_config(resumption_handle)
             ) as session:
-                logger.info(
-                    "Gemini Live connecté callSid=%s (reprise=%s)",
-                    call_sid,
-                    bool(resumption_handle),
-                )
+                logger.info("Gemini Live connecté callSid=%s (session #%d)", call_sid, session_i)
                 call_active, resumption_handle = await _run_session(
                     websocket, session, stream_sid, call_sid, resample_state, resumption_handle
                 )
+                logger.info("Retour _run_session #%d callSid=%s -> call_active=%s (reprise=%s)",
+                            session_i, call_sid, call_active, bool(resumption_handle))
         except WebSocketDisconnect:
-            logger.info("Twilio websocket déconnecté callSid=%s", call_sid)
+            logger.info("Twilio websocket déconnecté callSid=%s (session #%d)", call_sid, session_i)
+            call_active = False
+        except Exception:  # noqa: BLE001 — on veut voir POURQUOI la session meurt
+            logger.exception("Erreur inattendue dans la session Gemini callSid=%s (session #%d)",
+                             call_sid, session_i)
             call_active = False
 
-    logger.info("Call terminé callSid=%s", call_sid)
+    logger.info("Call terminé callSid=%s (après %d session(s) Gemini)", call_sid, session_i)
 
 
 async def _run_session(websocket, session, stream_sid, call_sid, resample_state, resumption_handle):
@@ -246,10 +262,14 @@ async def _run_session(websocket, session, stream_sid, call_sid, resample_state,
 
     async def pump_twilio_to_gemini():
         nonlocal call_active
+        media_frames = 0
         async for raw in _iter_twilio_messages(websocket):
             msg = json.loads(raw)
             event = msg.get("event")
             if event == "media":
+                media_frames += 1
+                if media_frames % 250 == 0:
+                    logger.debug("Twilio media: %d frames reçus (callSid=%s)", media_frames, call_sid)
                 ulaw = base64.b64decode(msg["media"]["payload"])
                 pcm_8k = audioop.ulaw2lin(ulaw, 2)
                 pcm_16k, resample_state["in"] = audioop.ratecv(
@@ -259,69 +279,129 @@ async def _run_session(websocket, session, stream_sid, call_sid, resample_state,
                     audio=types.Blob(data=pcm_16k, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
                 )
             elif event == "stop":
-                logger.info("Twilio stop callSid=%s", call_sid)
+                logger.info("[twilio->gemini] STOP reçu (appelant a raccroché) callSid=%s après %d frames",
+                            call_sid, media_frames)
                 call_active = False
                 return
+            else:
+                logger.info("[twilio->gemini] event non-media '%s' callSid=%s", event, call_sid)
+        # sortie sans 'stop' = flux fermé côté Twilio
+        logger.info("[twilio->gemini] flux Twilio terminé SANS 'stop' callSid=%s (%d frames)",
+                    call_sid, media_frames)
         call_active = False
 
     async def pump_gemini_to_twilio():
         nonlocal call_active, go_away, resumption_handle
-        async for response in session.receive():
-            if response.go_away:
-                logger.warning(
-                    "Gemini GoAway callSid=%s time_left=%s — reconnexion",
-                    call_sid,
-                    response.go_away.time_left,
-                )
-                go_away = True
-                return
-
-            if response.session_resumption_update and response.session_resumption_update.resumable:
-                resumption_handle = response.session_resumption_update.new_handle
-
-            server_content = response.server_content
-            if server_content:
-                if server_content.interrupted:
-                    # le chauffeur a coupé la parole de l'agent : on vide le
-                    # buffer audio déjà envoyé à Twilio pour éviter le chevauchement.
-                    await websocket.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
-                if server_content.input_transcription and server_content.input_transcription.text:
-                    text = server_content.input_transcription.text
-                    logger.info("[chauffeur] %s", text)
-                    _notify_bg("/events/transcript", {"speaker": "driver", "text": text})
-                if server_content.output_transcription and server_content.output_transcription.text:
-                    text = server_content.output_transcription.text
-                    logger.info("[agent] %s", text)
-                    _notify_bg("/events/transcript", {"speaker": "agent", "text": text})
-
-            if response.tool_call:
-                for fc in response.tool_call.function_calls:
-                    result = _dispatch_tool(fc.name, fc.args or {})
-                    await session.send_tool_response(
-                        function_responses=types.FunctionResponse(id=fc.id, name=fc.name, response=result)
+        # `session.receive()` se termine à CHAQUE `turn_complete` (fin de tour de
+        # l'agent), pas à la fin de l'appel. On reboucle donc pour ré-écouter le
+        # tour suivant (la réponse du chauffeur). Sinon l'appel raccrocherait
+        # juste après la première question de l'agent. La fin réelle de l'appel
+        # vient de Twilio ("stop"/déconnexion, géré par l'autre pump) ou d'un
+        # GoAway (reconnexion par _bridge_call).
+        turn = 0
+        while call_active and not go_away:
+            turn += 1
+            saw_response = False
+            async for response in session.receive():
+                saw_response = True
+                if response.go_away:
+                    logger.warning(
+                        "Gemini GoAway callSid=%s time_left=%s — reconnexion",
+                        call_sid,
+                        response.go_away.time_left,
                     )
+                    go_away = True
+                    return
 
-            audio = response.data
-            if audio:
-                pcm_8k, resample_state["out"] = audioop.ratecv(
-                    audio, 2, 1, GEMINI_OUT_RATE, TWILIO_RATE, resample_state["out"]
-                )
-                ulaw = audioop.lin2ulaw(pcm_8k, 2)
-                payload = base64.b64encode(ulaw).decode("ascii")
-                await websocket.send_text(
-                    json.dumps({"event": "media", "streamSid": stream_sid, "media": {"payload": payload}})
-                )
+                if response.session_resumption_update and response.session_resumption_update.resumable:
+                    resumption_handle = response.session_resumption_update.new_handle
+
+                server_content = response.server_content
+                if server_content:
+                    if server_content.interrupted:
+                        # le chauffeur a coupé la parole de l'agent : on vide le
+                        # buffer audio déjà envoyé à Twilio pour éviter le chevauchement.
+                        await websocket.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+                    if server_content.input_transcription and server_content.input_transcription.text:
+                        text = server_content.input_transcription.text
+                        logger.info("[chauffeur] %s", text)
+                        _notify_bg("/events/transcript", {"speaker": "driver", "text": text})
+                    if server_content.output_transcription and server_content.output_transcription.text:
+                        text = server_content.output_transcription.text
+                        logger.info("[agent] %s", text)
+                        _notify_bg("/events/transcript", {"speaker": "agent", "text": text})
+
+                if response.tool_call:
+                    for fc in response.tool_call.function_calls:
+                        logger.info("[gemini->twilio] tool_call tour=%d %s(%s) callSid=%s",
+                                    turn, fc.name, fc.args, call_sid)
+                        result = _dispatch_tool(fc.name, fc.args or {})
+                        await session.send_tool_response(
+                            function_responses=types.FunctionResponse(id=fc.id, name=fc.name, response=result)
+                        )
+
+                audio = response.data
+                if audio:
+                    pcm_8k, resample_state["out"] = audioop.ratecv(
+                        audio, 2, 1, GEMINI_OUT_RATE, TWILIO_RATE, resample_state["out"]
+                    )
+                    ulaw = audioop.lin2ulaw(pcm_8k, 2)
+                    payload = base64.b64encode(ulaw).decode("ascii")
+                    await websocket.send_text(
+                        json.dumps({"event": "media", "streamSid": stream_sid, "media": {"payload": payload}})
+                    )
+            # fin d'un tour (turn_complete) -> on reboucle sur receive() pour
+            # écouter la réponse du chauffeur, l'appel reste ouvert. Si receive()
+            # n'a rien renvoyé, la session Gemini est fermée -> on sort (évite un
+            # spin ; _bridge_call reconnecte si l'appel Twilio tient toujours).
+            logger.info("[gemini->twilio] fin tour=%d (saw_response=%s call_active=%s go_away=%s) callSid=%s",
+                        turn, saw_response, call_active, go_away, call_sid)
+            if not saw_response:
+                logger.warning("[gemini->twilio] receive() VIDE au tour=%d -> session Gemini fermée "
+                               "par le serveur callSid=%s", turn, call_sid)
+                break
+        logger.info("[gemini->twilio] sortie de boucle callSid=%s (call_active=%s go_away=%s après %d tours)",
+                    call_sid, call_active, go_away, turn)
         call_active = False
 
-    tasks = [asyncio.create_task(pump_twilio_to_gemini()), asyncio.create_task(pump_gemini_to_twilio())]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    tasks = {
+        "twilio->gemini": asyncio.create_task(pump_twilio_to_gemini()),
+        "gemini->twilio": asyncio.create_task(pump_gemini_to_twilio()),
+    }
+    names = {task: name for name, task in tasks.items()}
+    done, pending = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+
+    # Quel pump a terminé en premier, et pourquoi ? (c'est LA raison de la fermeture)
+    disconnect: WebSocketDisconnect | None = None
+    had_error = False
+    for task in done:
+        name = names[task]
+        exc = task.exception()
+        if exc is None:
+            logger.info("[session] pump '%s' terminé normalement callSid=%s", name, call_sid)
+        elif isinstance(exc, WebSocketDisconnect):
+            logger.info("[session] pump '%s' -> WebSocketDisconnect callSid=%s", name, call_sid)
+            disconnect = exc
+        else:
+            logger.error("[session] pump '%s' a levé %s callSid=%s — TRACEBACK ci-dessous",
+                         name, type(exc).__name__, call_sid, exc_info=exc)
+            had_error = True
+
     for task in pending:
         task.cancel()
-    for task in done:
-        exc = task.exception()
-        if exc is not None:
-            raise exc
+        try:
+            await task
+        except BaseException:  # noqa: BLE001 — annulation attendue
+            pass
 
+    if disconnect is not None:
+        raise disconnect
+    if had_error:
+        logger.info("[session] fin sur erreur -> on termine l'appel callSid=%s", call_sid)
+        return False, resumption_handle
+
+    logger.info("[session] terminée callSid=%s -> call_active=%s go_away=%s (reconnexion=%s)",
+                call_sid, call_active, go_away, bool(call_active or go_away))
     return (call_active or go_away), resumption_handle
 
 

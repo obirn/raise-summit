@@ -73,6 +73,12 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
 
 ## Changelog
 
+- **2026-07-05** — M3 bugfix (confirmed by live call): the bridge hung up right after the
+  agent's turn (`session.receive()` ends at each `turn_complete`; the pump treated end-of-turn
+  as end-of-call, and pump exceptions were re-raised silently → WS crash). Now re-loops
+  `receive()` across turns and logs every teardown path (exceptions with traceback, Twilio
+  events, turn boundaries, exit reasons; `LOG_LEVEL=DEBUG` for media frames). Multi-turn
+  conversation works end to end.
 - **2026-07-05** — M3 done: Twilio↔Gemini-Live bridge integrated under `agent/voice/` (relocated
   from the `twilio` branch), push path `/events/field-truth` + `call-started`/`transcript`, lazy
   Gemini client, `make voice`. Verified live push path → `resolving`; 12/12 tests.
