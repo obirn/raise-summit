@@ -125,7 +125,21 @@ class RealComputerUse:
                 logger.exception("CU task failed: %s", task.goal)
                 fut.set_exception(e)
 
+    def _ensure_browser(self) -> None:
+        """Relaunch if the headful window/context was closed (manually, crash, or
+        a stale profile lock) — otherwise every later task cascades on a dead page."""
+        if self._browser is not None and self._browser.is_alive():
+            return
+        logger.warning("CU browser not alive — relaunching")
+        try:
+            if self._browser is not None:
+                self._browser.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._browser = BrowserComputer()
+
     def _handle(self, task: Task) -> Observation | ActionResult:
+        self._ensure_browser()
         b = self._browser
         b.navigate(f"{PORTAL_BASE_URL}/{PORTAL_PAGE[task.target_system]}")
         self._settle()

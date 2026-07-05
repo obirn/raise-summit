@@ -41,6 +41,13 @@ class BrowserComputer:
     def screen_size(self) -> tuple[int, int]:
         return (VIEWPORT_W, VIEWPORT_H)
 
+    def is_alive(self) -> bool:
+        """False if the page/context/browser was closed (window shut, crash…)."""
+        try:
+            return self.page is not None and not self.page.is_closed()
+        except Exception:  # noqa: BLE001
+            return False
+
     def current_url(self) -> str:
         return self.page.url
 

@@ -1,7 +1,12 @@
 # Unblock — one-command demo control (see CLAUDE.md).
 # Targets delegate to scripts/ which activate the Python venv + Node (nvm).
 SHELL := /usr/bin/env bash
-.PHONY: setup demo demo-cu agentic golden reset kill resume test build lint cu-smoke voice antigravity-probe
+.PHONY: setup demo demo-cu agentic golden reset kill resume test build lint cu-smoke voice antigravity-probe stop
+
+stop:   ## full teardown: orchestrator + vite + voice bridge + the CU headful browser
+	- pkill -f "agent.orchestrator.app"; pkill -f "agent.voice.twilio_bridge"; \
+	  pkill -f "node.*vite"; pkill -f "user-data-dir=.*cu_profile"; true
+	@echo "stopped all demo processes"
 
 setup:  ## install Python + Node deps + Playwright Chromium
 	. scripts/env.sh && pip install -q -r requirements.txt && \
