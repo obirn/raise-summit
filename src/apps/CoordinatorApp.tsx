@@ -1,5 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Bot, CheckCircle2, PhoneCall, Play, Radio } from 'lucide-react'
+import type { ReactNode } from 'react'
+import {
+  AlertTriangle, Bot, CheckCircle2, PhoneCall, Play, Radio,
+  Package, DollarSign, Activity, ShieldAlert, ArrowRight,
+} from 'lucide-react'
 
 // The orchestrator is the ONLY interface this UI uses (MASTER_PROMPT §3).
 const ORCH = (import.meta as { env?: Record<string, string> }).env?.VITE_ORCH_URL ?? 'http://localhost:5000'
@@ -27,17 +31,28 @@ type Container = {
   pending_action: PendingAction | null
 }
 
-const STATUS_TONE: Record<string, string> = {
-  moving: 'bg-slate-100 text-slate-700 border-slate-300',
-  diagnosing: 'bg-amber-50 text-amber-800 border-amber-300',
-  stalled: 'bg-red-50 text-red-800 border-red-300',
-  stalled_unlocatable: 'bg-red-100 text-red-900 border-red-400',
-  awaiting_action: 'bg-orange-100 text-orange-900 border-orange-400',
-  executing: 'bg-blue-50 text-blue-800 border-blue-300',
-  verifying: 'bg-blue-50 text-blue-800 border-blue-300',
-  resolving: 'bg-emerald-50 text-emerald-800 border-emerald-300',
-  released: 'bg-emerald-100 text-emerald-900 border-emerald-400',
-  escalated: 'bg-red-100 text-red-900 border-red-400',
+// status -> {dot, pill classes} for the light theme
+const STATUS_TONE: Record<string, { dot: string; pill: string; label?: string }> = {
+  moving: { dot: 'bg-neutral-400', pill: 'bg-neutral-100 text-neutral-600' },
+  diagnosing: { dot: 'bg-amber-500', pill: 'bg-amber-50 text-amber-700' },
+  stalled: { dot: 'bg-red-500', pill: 'bg-red-50 text-red-700' },
+  stalled_unlocatable: { dot: 'bg-red-500', pill: 'bg-red-50 text-red-700', label: 'unlocatable' },
+  awaiting_action: { dot: 'bg-orange-500', pill: 'bg-orange-50 text-orange-700', label: 'awaiting approval' },
+  executing: { dot: 'bg-blue-500 animate-pulse', pill: 'bg-blue-50 text-blue-700' },
+  verifying: { dot: 'bg-blue-500 animate-pulse', pill: 'bg-blue-50 text-blue-700' },
+  resolving: { dot: 'bg-emerald-500', pill: 'bg-emerald-50 text-emerald-700' },
+  released: { dot: 'bg-emerald-500', pill: 'bg-emerald-50 text-emerald-700' },
+  escalated: { dot: 'bg-red-500', pill: 'bg-red-50 text-red-700' },
+}
+
+function StatusPill({ status }: { status: string }) {
+  const t = STATUS_TONE[status] ?? { dot: 'bg-neutral-400', pill: 'bg-neutral-100 text-neutral-600' }
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${t.pill}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${t.dot}`} />
+      {t.label ?? status.replace(/_/g, ' ')}
+    </span>
+  )
 }
 
 function artifactUrl(path: string | null): string | null {
@@ -51,16 +66,16 @@ type Agent = {
   container_id: string
   brain: string
   status: string
-  step: string
+  steps: string[]
   interaction_id?: string | null
 }
 
-const AGENT_TONE: Record<string, string> = {
-  planning: 'border-cyan-600 text-cyan-300',
-  awaiting_human: 'border-orange-500 text-orange-300',
-  executing: 'border-blue-500 text-blue-300',
-  done: 'border-emerald-600 text-emerald-300',
-  failed: 'border-red-600 text-red-300',
+const AGENT_TONE: Record<string, { ring: string; pill: string }> = {
+  planning: { ring: 'ring-blue-200', pill: 'bg-blue-50 text-blue-700' },
+  awaiting_human: { ring: 'ring-orange-200', pill: 'bg-orange-50 text-orange-700' },
+  executing: { ring: 'ring-blue-200', pill: 'bg-blue-50 text-blue-700' },
+  done: { ring: 'ring-emerald-200', pill: 'bg-emerald-50 text-emerald-700' },
+  failed: { ring: 'ring-red-200', pill: 'bg-red-50 text-red-700' },
 }
 
 export function CoordinatorApp() {
@@ -99,18 +114,25 @@ export function CoordinatorApp() {
             ...prev,
             [msg.agent_id]: {
               agent_id: msg.agent_id, container_id: msg.container_id,
-              brain: msg.brain, status: 'planning', step: msg.goal,
+              brain: msg.brain, status: 'planning', steps: [],
             },
           }))
         } else if (msg.type === 'agent_step') {
-          setAgents((prev) => ({
-            ...prev,
-            [msg.agent_id]: {
-              ...(prev[msg.agent_id] ?? { agent_id: msg.agent_id, container_id: msg.container_id, brain: '' }),
-              status: msg.status, step: msg.summary,
-              interaction_id: msg.interaction_id ?? prev[msg.agent_id]?.interaction_id,
-            } as Agent,
-          }))
+          setAgents((prev) => {
+            const cur = prev[msg.agent_id] ?? {
+              agent_id: msg.agent_id, container_id: msg.container_id, brain: '', steps: [],
+            }
+            const steps = cur.steps[cur.steps.length - 1] === msg.summary
+              ? cur.steps
+              : [...cur.steps, msg.summary]
+            return {
+              ...prev,
+              [msg.agent_id]: {
+                ...cur, status: msg.status, steps,
+                interaction_id: msg.interaction_id ?? cur.interaction_id,
+              } as Agent,
+            }
+          })
         } else if (msg.type === 'agent_done') {
           setAgents((prev) =>
             prev[msg.agent_id]
@@ -148,23 +170,38 @@ export function CoordinatorApp() {
     [agents],
   )
 
+  // KPI strip
+  const kpi = useMemo(() => {
+    const open = rows.filter((c) => c.status !== 'moving' && c.status !== 'released')
+    const atRisk = open.reduce((s, c) => s + (c.free_time?.dollars_at_risk ?? 0), 0)
+    const working = activeAgents.filter((a) => a.status === 'planning' || a.status === 'executing').length
+    const gates = rows.filter((c) => c.pending_action).length
+    return { stuck: open.length, atRisk, working, gates }
+  }, [rows, activeAgents])
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 bg-slate-900/80 px-6 py-4">
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-[0.2em] text-slate-500">Unblock</p>
-            <h1 className="text-2xl font-black">Site Office</h1>
-          </div>
+    <div className="min-h-screen bg-[#f7f8fa] text-neutral-900 antialiased">
+      {/* App bar */}
+      <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
           <div className="flex items-center gap-3">
-            <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-mono text-xs ${connected ? 'border-emerald-500 text-emerald-400' : 'border-red-500 text-red-400'}`}>
-              <Radio size={12} /> {connected ? 'live' : 'reconnecting'}
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-white">
+              <Package size={17} />
+            </div>
+            <div className="leading-tight">
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-400">Unblock</p>
+              <h1 className="text-[15px] font-semibold tracking-tight">Site Office</h1>
+            </div>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${connected ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+              <Radio size={12} className={connected ? 'animate-pulse' : ''} /> {connected ? 'live' : 'reconnecting'}
             </span>
             {/* DEMO-ONLY controls: normally the alert engine + telephony drive these */}
-            <button onClick={() => post('/monitor/tick', {})} className="inline-flex items-center gap-1.5 rounded-md border border-slate-600 px-3 py-1.5 text-sm font-semibold hover:bg-slate-800">
+            <button onClick={() => post('/monitor/tick', {})} className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700 shadow-sm transition-colors hover:bg-neutral-50">
               <Play size={14} /> Run tick
             </button>
-            <button onClick={() => post('/events/call', { demo: true, container_id: 'MSKU4471' })} className="inline-flex items-center gap-1.5 rounded-md border border-cyan-600 bg-cyan-950 px-3 py-1.5 text-sm font-semibold text-cyan-200 hover:bg-cyan-900">
+            <button onClick={() => post('/events/call', { demo: true, container_id: 'MSKU4471' })} className="inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-neutral-700">
               <PhoneCall size={14} /> Driver calls in
             </button>
           </div>
@@ -172,24 +209,35 @@ export function CoordinatorApp() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-6">
+        {/* KPI strip */}
+        <section className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Kpi icon={<Package size={16} />} tint="text-neutral-500 bg-neutral-100" label="Stuck containers" value={String(kpi.stuck)} />
+          <Kpi icon={<DollarSign size={16} />} tint="text-amber-600 bg-amber-50" label="At risk" value={`$${kpi.atRisk.toFixed(0)}`} />
+          <Kpi icon={<Activity size={16} />} tint="text-blue-600 bg-blue-50" label="Agents working" value={String(kpi.working)} />
+          <Kpi icon={<ShieldAlert size={16} />} tint="text-orange-600 bg-orange-50" label="Awaiting approval" value={String(kpi.gates)} />
+        </section>
+
         {/* THE single surfaced line + one-tap gate (§7 / §10) */}
         {surfaced && surfaced.pending_action && (
-          <section className="mb-6 rounded-xl border border-orange-500 bg-orange-950/40 p-5 shadow-dock">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 shrink-0 text-orange-400" />
+          <section className="mb-6 overflow-hidden rounded-xl border border-orange-200 bg-white shadow-sm">
+            <div className="h-1 w-full bg-gradient-to-r from-orange-400 to-amber-400" />
+            <div className="flex items-start gap-3.5 p-5">
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
+                <AlertTriangle size={18} />
+              </div>
               <div className="flex-1">
-                <p className="font-mono text-[11px] uppercase tracking-widest text-orange-400">Human approval required</p>
-                <p className="mt-1 text-lg font-bold text-orange-50">{surfaced.pending_action.line}</p>
-                <div className="mt-4 flex gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-orange-600">Human approval required</p>
+                <p className="mt-1 text-lg font-semibold tracking-tight text-neutral-900">{surfaced.pending_action.line}</p>
+                <div className="mt-4 flex gap-2.5">
                   <button
                     onClick={() => post('/approve', { container_id: surfaced.id, action_id: surfaced.pending_action!.action_id })}
-                    className="rounded-md bg-emerald-500 px-5 py-2.5 font-bold text-emerald-950 hover:bg-emerald-400"
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-500"
                   >
-                    {surfaced.pending_action.goal}
+                    {surfaced.pending_action.goal} <ArrowRight size={15} />
                   </button>
                   <button
                     onClick={() => post('/dismiss', { container_id: surfaced.id, alert_id: `OVERDUE:${surfaced.id}:gate_out` })}
-                    className="rounded-md border border-slate-600 px-5 py-2.5 font-semibold text-slate-300 hover:bg-slate-800"
+                    className="rounded-lg border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-50"
                   >
                     Dismiss
                   </button>
@@ -201,15 +249,20 @@ export function CoordinatorApp() {
 
         {/* Driver on the line + live translated transcript */}
         {driverOnLine && (
-          <section className="mb-6 rounded-xl border border-cyan-700 bg-cyan-950/30 p-4">
-            <p className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-cyan-300">
-              <PhoneCall size={13} className="animate-pulse" /> Driver on the line · Live Translate
-            </p>
-            <div className="mt-3 space-y-1.5 font-mono text-sm">
+          <section className="mb-6 overflow-hidden rounded-xl border border-blue-200 bg-white shadow-sm">
+            <div className="flex items-center gap-2 border-b border-neutral-100 bg-blue-50/50 px-5 py-2.5">
+              <PhoneCall size={14} className="animate-pulse text-blue-600" />
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-blue-700">Driver on the line · Live Translate</p>
+            </div>
+            <div className="space-y-2.5 p-5">
+              {transcript.length === 0 && <p className="text-sm italic text-neutral-400">connecting…</p>}
               {transcript.map((t, i) => (
-                <p key={i} className={t.speaker === 'agent' ? 'text-cyan-200' : 'text-slate-300'}>
-                  <span className="opacity-60">[{t.speaker}]</span> {t.text}
-                </p>
+                <div key={i} className={`flex ${t.speaker === 'agent' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${t.speaker === 'agent' ? 'bg-blue-600 text-white' : 'bg-neutral-100 text-neutral-800'}`}>
+                    <span className={`mb-0.5 block text-[10px] font-medium uppercase tracking-wide ${t.speaker === 'agent' ? 'text-blue-200' : 'text-neutral-400'}`}>{t.speaker}</span>
+                    {t.text}
+                  </div>
+                </div>
               ))}
             </div>
           </section>
@@ -218,91 +271,113 @@ export function CoordinatorApp() {
         {/* Agents at work — the orchestrator spawns one solver agent per stuck container */}
         {activeAgents.length > 0 && (
           <section className="mb-6">
-            <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-slate-500">
-              <Bot size={13} /> Agents at work
+            <p className="mb-2.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">
+              <Bot size={14} /> Agents at work
             </p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {activeAgents.map((a) => (
-                <div key={a.agent_id} className={`rounded-lg border bg-slate-900/60 p-3 ${AGENT_TONE[a.status] ?? 'border-slate-700 text-slate-300'}`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-sm font-bold text-slate-100">{a.container_id}</span>
-                    <span className="font-mono text-[10px] uppercase tracking-wider">{a.status}</span>
+              {activeAgents.map((a) => {
+                const tone = AGENT_TONE[a.status] ?? { ring: 'ring-neutral-200', pill: 'bg-neutral-100 text-neutral-600' }
+                return (
+                  <div key={a.agent_id} className={`rounded-xl border border-neutral-200 bg-white p-4 shadow-sm ring-1 ${tone.ring}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-sm font-semibold text-neutral-900">{a.container_id}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${tone.pill}`}>{a.status.replace(/_/g, ' ')}</span>
+                    </div>
+                    <p className="mt-0.5 font-mono text-[10px] text-neutral-400">{a.agent_id} · {a.brain}</p>
+                    {a.interaction_id && (
+                      <p className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] text-neutral-500" title={`Reasoning held server-side; resumable by id\n${a.interaction_id}`}>
+                        ⛓ durable via Antigravity
+                      </p>
+                    )}
+                    {/* live step timeline — what the agent is doing, in order */}
+                    <ol className="mt-3 space-y-1.5">
+                      {a.steps.map((s, i) => (
+                        <li key={i} className={`flex gap-2 text-sm ${i === a.steps.length - 1 ? 'text-neutral-800' : 'text-neutral-400'}`}>
+                          <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-500" />
+                          <span>{s}</span>
+                        </li>
+                      ))}
+                      {a.status === 'planning' && (
+                        <li className="flex items-center gap-2 text-sm text-neutral-400">
+                          <span className="flex gap-0.5">
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 [animation-delay:-0.3s]" />
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 [animation-delay:-0.15s]" />
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400" />
+                          </span>
+                          <span className="italic">thinking</span>
+                        </li>
+                      )}
+                    </ol>
                   </div>
-                  <p className="mt-1 font-mono text-[10px] text-slate-500">{a.agent_id} · {a.brain}</p>
-                  {a.interaction_id && (
-                    <p className="mt-1 font-mono text-[10px] text-cyan-500" title="Reasoning held server-side; resumable by id">
-                      ⛓ durable via Antigravity · {a.interaction_id}
-                    </p>
-                  )}
-                  <p className="mt-2 text-sm text-slate-300">
-                    {a.status === 'planning' && <span className="animate-pulse">▸ </span>}
-                    {a.step}
-                  </p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </section>
         )}
 
         {/* The board — one row per container, sorted by $ at risk */}
-        <section className="overflow-hidden rounded-xl border border-slate-800">
+        <section className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm">
+          <div className="border-b border-neutral-100 px-5 py-3">
+            <h2 className="text-sm font-semibold tracking-tight text-neutral-900">Exception board</h2>
+          </div>
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-900 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+            <thead className="bg-neutral-50 text-[11px] uppercase tracking-wider text-neutral-400">
               <tr>
-                <th className="px-4 py-3">Container</th>
-                <th className="px-4 py-3">Lane</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">$ at risk</th>
-                <th className="px-4 py-3">Blocker</th>
-                <th className="px-4 py-3"></th>
+                <th className="px-5 py-2.5 font-medium">Container</th>
+                <th className="px-5 py-2.5 font-medium">Lane</th>
+                <th className="px-5 py-2.5 font-medium">Status</th>
+                <th className="px-5 py-2.5 font-medium">$ at risk</th>
+                <th className="px-5 py-2.5 font-medium">Blocker</th>
+                <th className="px-5 py-2.5" />
               </tr>
             </thead>
             <tbody>
+              {rows.length === 0 && (
+                <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-neutral-400">No containers yet — run a tick or take a call.</td></tr>
+              )}
               {rows.map((c) => {
                 const binding = c.blockers[c.blockers.length - 1]
                 return (
                   <Fragment key={c.id}>
-                    <tr className="border-t border-slate-800 hover:bg-slate-900/50">
-                      <td className="px-4 py-3 font-mono font-bold">{c.id}</td>
-                      <td className="px-4 py-3 text-slate-400">{c.carrier} · {c.port}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-block rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${STATUS_TONE[c.status] ?? 'bg-slate-100 text-slate-700'}`}>
-                          {c.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 font-mono">{c.free_time?.dollars_at_risk ? `$${c.free_time.dollars_at_risk.toFixed(0)}` : '—'}</td>
-                      <td className="px-4 py-3 text-slate-300">
+                    <tr className="border-t border-neutral-100 transition-colors hover:bg-neutral-50/70">
+                      <td className="px-5 py-3 font-mono font-semibold text-neutral-900">{c.id}</td>
+                      <td className="px-5 py-3 text-neutral-500">{c.carrier} · {c.port}</td>
+                      <td className="px-5 py-3"><StatusPill status={c.status} /></td>
+                      <td className="px-5 py-3 font-mono tabular-nums text-neutral-700">{c.free_time?.dollars_at_risk ? `$${c.free_time.dollars_at_risk.toFixed(0)}` : '—'}</td>
+                      <td className="px-5 py-3 text-neutral-600">
                         {binding ? (
-                          <span>
+                          <span className="inline-flex items-center gap-2">
                             {binding.evidence}
                             {binding.discovered_via === 'voice' && (
-                              <span className="ml-2 rounded bg-cyan-900 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200">via voice</span>
+                              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                                <PhoneCall size={10} /> voice
+                              </span>
                             )}
                           </span>
                         ) : (
-                          <span className="text-slate-600">—</span>
+                          <span className="text-neutral-300">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <button onClick={() => setExpanded(expanded === c.id ? null : c.id)} className="font-mono text-xs text-slate-400 hover:text-slate-200">
+                      <td className="px-5 py-3 text-right">
+                        <button onClick={() => setExpanded(expanded === c.id ? null : c.id)} className="font-mono text-xs text-neutral-400 transition-colors hover:text-neutral-700">
                           {expanded === c.id ? 'hide' : 'audit'} ({c.action_log.length})
                         </button>
                       </td>
                     </tr>
                     {expanded === c.id && (
-                      <tr className="bg-slate-900/60">
-                        <td colSpan={6} className="px-4 py-4">
-                          <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-slate-500">
+                      <tr className="bg-neutral-50/60">
+                        <td colSpan={6} className="px-5 py-4">
+                          <p className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
                             <CheckCircle2 size={12} /> Audit trail — demurrage-dispute evidence
                           </p>
                           <ol className="space-y-2">
                             {c.action_log.map((e, i) => (
-                              <li key={i} className="flex items-start gap-3 font-mono text-xs">
-                                <span className="w-16 shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-center text-slate-400">{e.actor}</span>
-                                <span className="flex-1 text-slate-300">{e.action} <span className="text-slate-600">→ {e.result}</span></span>
+                              <li key={i} className="flex items-start gap-3 text-xs">
+                                <span className="w-16 shrink-0 rounded-md bg-white px-1.5 py-0.5 text-center font-mono text-neutral-500 ring-1 ring-neutral-200">{e.actor}</span>
+                                <span className="flex-1 text-neutral-600">{e.action} <span className="text-neutral-400">→ {e.result}</span></span>
                                 {artifactUrl(e.artifact_path) && (
                                   <a href={artifactUrl(e.artifact_path)!} target="_blank" rel="noreferrer">
-                                    <img src={artifactUrl(e.artifact_path)!} alt="screenshot" className="h-8 w-12 rounded border border-slate-700 object-cover" />
+                                    <img src={artifactUrl(e.artifact_path)!} alt="screenshot" className="h-9 w-14 rounded-md object-cover ring-1 ring-neutral-200 transition-transform hover:scale-105" />
                                   </a>
                                 )}
                               </li>
@@ -318,6 +393,18 @@ export function CoordinatorApp() {
           </table>
         </section>
       </main>
+    </div>
+  )
+}
+
+function Kpi({ icon, tint, label, value }: { icon: ReactNode; tint: string; label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-2">
+        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${tint}`}>{icon}</span>
+        <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">{label}</span>
+      </div>
+      <p className="mt-2.5 text-2xl font-semibold tabular-nums tracking-tight text-neutral-900">{value}</p>
     </div>
   )
 }

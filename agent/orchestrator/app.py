@@ -39,6 +39,22 @@ CU_MODE = os.environ.get("CU_MODE", "stub")  # stub (deterministic) | real (Gemi
 # deterministic (hardcoded diagnose) | agentic (LLM solver agents spawn per container)
 AGENT_MODE = os.environ.get("AGENT_MODE", "deterministic")
 AGENT_BRAIN = os.environ.get("AGENT_BRAIN", "scripted")  # scripted (offline) | gemini
+# stub (log only) | bridge (speak the resolution back into the OPEN live call)
+VOICE_MODE = os.environ.get("VOICE_MODE", "stub")
+
+
+def _make_voice() -> "StubVoice":
+    """Live speak-back to the driver when VOICE_MODE=bridge (needs `make voice`
+    running); otherwise the offline logging stub. Falls back to the stub on any
+    import/setup failure so the demo/tests never hard-crash."""
+    if VOICE_MODE == "bridge":
+        try:
+            from ..voice.bridge_client import BridgeVoice
+            return BridgeVoice()  # type: ignore[return-value]
+        except Exception:  # noqa: BLE001
+            logging.getLogger("orchestrator").exception(
+                "VOICE_MODE=bridge failed to init; falling back to stub")
+    return StubVoice()
 
 
 def _make_cu() -> ComputerUse:
@@ -75,7 +91,7 @@ board = Board.resume(ENV_ID, DB_PATH)
 # Seed on first boot (empty env). `make reset` wipes the DB to force a re-seed.
 if not board.all():
     seed_board(board, DEMO_NOW)
-engine = Engine(board, _make_cu(), StubVoice(), on_event=manager.broadcast)
+engine = Engine(board, _make_cu(), _make_voice(), on_event=manager.broadcast)
 # Agentic layer: the orchestrator spawns one durable solver agent per stuck
 # container (only used when AGENT_MODE=agentic).
 agents = AgentManager(engine, manager.broadcast, brain_kind=AGENT_BRAIN)

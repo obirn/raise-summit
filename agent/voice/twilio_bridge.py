@@ -49,12 +49,25 @@ logger.propagate = False  # évite les doublons via le root/uvicorn
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 ORCH_URL = os.environ.get("ORCH_URL", "http://localhost:5000")  # orchestrateur (contrat interne)
 
+# Latence de réponse = surtout la VAD : par défaut Gemini Live attend un silence
+# long (sensibilité basse) avant de décider que le chauffeur a fini de parler,
+# d'où des réponses "parfois très longues". On raccourcit ce délai et on rend la
+# détection de fin de parole plus sensible. Réglable en démo selon le bruit du
+# gate : VAD_SILENCE_MS plus haut si l'agent coupe la parole trop tôt.
+VAD_SILENCE_MS = int(os.environ.get("VAD_SILENCE_MS", "550"))
+VAD_PREFIX_MS = int(os.environ.get("VAD_PREFIX_MS", "200"))
+
 TWILIO_RATE = 8000       # mu-law 8 kHz, tel que reçu/attendu par Twilio Media Streams
 GEMINI_IN_RATE = 16000   # PCM16 attendu en entrée par Gemini Live
 GEMINI_OUT_RATE = 24000  # PCM16 produit en sortie par Gemini Live
 
 _client: genai.Client | None = None
 app = FastAPI()
+
+# The single active Live session (one demo call at a time). The orchestrator's
+# /speak endpoint injects the resolution into THIS session so the driver hears the
+# confirmation over the still-open call (real Live Translate speak-back, §9).
+_ACTIVE: dict[str, object] = {"session": None, "container_id": None}
 
 
 def get_client() -> genai.Client:
@@ -95,6 +108,14 @@ portique d'un terminal.
   tu ne payes et ne libères JAMAIS toi-même. Relance pour obtenir la
   référence exacte, puis appelle l'outil flag_blocked_at_gate pour remonter
   le cas au desk humain, qui validera avant toute action.
+- Après avoir appelé flag_blocked_at_gate, dis SEULEMENT au chauffeur de rester
+  en ligne un instant pendant que le desk vérifie. NE le remercie PAS, ne dis
+  PAS au revoir, ne dis PAS que c'est réglé/payé/résolu, ne dis PAS que tu
+  rappelleras : rien n'est résolu tant que le desk n'a pas validé.
+- La confirmation finale n'arrive QUE via un message balisé [DESK UPDATE].
+  Tant que tu ne l'as pas reçu, tu n'annonces aucune résolution. Dès que tu le
+  reçois, transmets-le au chauffeur dans sa langue, en une phrase, et là
+  seulement tu peux conclure/remercier.
 """
 
 TOOLS = [
@@ -150,6 +171,7 @@ def _dispatch_tool(name: str, args: dict) -> dict:
     # /approve dans l'orchestrateur).
     container_id = args.get("container_id")
     if container_id:
+        _ACTIVE["container_id"] = container_id  # so /speak can target this call
         _notify_bg("/events/field-truth", {
             "container_id": container_id,
             "blocker_type": "unpaid_detention",
@@ -168,6 +190,17 @@ def _live_config(resumption_handle: str | None = None) -> types.LiveConnectConfi
         system_instruction=SYSTEM_INSTRUCTION,
         tools=TOOLS,
         session_resumption=types.SessionResumptionConfig(handle=resumption_handle),
+        # VAD réactive : l'agent répond dès que le chauffeur se tait (~550 ms) au
+        # lieu d'attendre le long silence par défaut. Sensibilité HIGH aux deux
+        # bouts = démarre/coupe vite (barge-in fluide), cf. VAD_SILENCE_MS.
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                prefix_padding_ms=VAD_PREFIX_MS,
+                silence_duration_ms=VAD_SILENCE_MS,
+            ),
+        ),
     )
 
 
@@ -182,6 +215,32 @@ async def voice(request: Request) -> Response:
         "</Connect></Response>"
     )
     return Response(content=twiml, media_type="text/xml")
+
+
+@app.post("/speak")
+async def speak(request: Request) -> dict:
+    """The orchestrator calls this on human approval: inject the resolution into
+    the OPEN Live session so Gemini speaks it to the driver in their language
+    (real Live Translate speak-back — the driver is told over the phone, not just
+    on the Site Office). No-op if no call is active."""
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    session = _ACTIVE.get("session")
+    if session is None or not message:
+        return {"spoken": False, "reason": "no active call" if session is None else "empty message"}
+    try:
+        await session.send_client_content(  # type: ignore[attr-defined]
+            turns=types.Content(role="user", parts=[types.Part(
+                text="[DESK UPDATE] Translate the following into the language the "
+                     "driver has been speaking on this call and say it to them now, "
+                     f"briefly and warmly, then stop: {message}")]),
+            turn_complete=True,
+        )
+        logger.info("Injected desk confirmation into live call: %s", message)
+        return {"spoken": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("speak injection failed")
+        return {"spoken": False, "reason": str(exc)}
 
 
 @app.websocket("/ws")
@@ -247,6 +306,8 @@ async def _bridge_call(websocket: WebSocket) -> None:
                              call_sid, session_i)
             call_active = False
 
+    _ACTIVE["session"] = None
+    _ACTIVE["container_id"] = None
     logger.info("Call terminé callSid=%s (après %d session(s) Gemini)", call_sid, session_i)
 
 
@@ -259,6 +320,8 @@ async def _run_session(websocket, session, stream_sid, call_sid, resample_state,
     """
     call_active = True
     go_away = False
+    # expose this session so /speak can inject the resolution into the open call
+    _ACTIVE["session"] = session
 
     async def pump_twilio_to_gemini():
         nonlocal call_active

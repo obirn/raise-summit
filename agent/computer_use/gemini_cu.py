@@ -125,12 +125,13 @@ class RealComputerUse:
                 logger.exception("CU task failed: %s", task.goal)
                 fut.set_exception(e)
 
-    def _ensure_browser(self) -> None:
+    def _ensure_browser(self, force: bool = False) -> None:
         """Relaunch if the headful window/context was closed (manually, crash, or
-        a stale profile lock) — otherwise every later task cascades on a dead page."""
-        if self._browser is not None and self._browser.is_alive():
+        a stale profile lock) — otherwise every later task cascades on a dead page.
+        `force` relaunches unconditionally (after a navigate hit a dead driver)."""
+        if not force and self._browser is not None and self._browser.is_alive():
             return
-        logger.warning("CU browser not alive — relaunching")
+        logger.warning("CU browser not alive%s — relaunching", " (forced)" if force else "")
         try:
             if self._browser is not None:
                 self._browser.close()
@@ -138,10 +139,21 @@ class RealComputerUse:
             pass
         self._browser = BrowserComputer()
 
+    def _navigate(self, url: str) -> None:
+        """Navigate with a self-healing retry: if the driver connection died between
+        tasks, is_alive may not have caught it, so on failure force a relaunch and
+        retry once before giving up."""
+        try:
+            self._ensure_browser()
+            self._browser.navigate(url)
+        except Exception:  # noqa: BLE001
+            logger.exception("navigate failed; forcing browser relaunch: %s", url)
+            self._ensure_browser(force=True)
+            self._browser.navigate(url)
+
     def _handle(self, task: Task) -> Observation | ActionResult:
-        self._ensure_browser()
+        self._navigate(f"{PORTAL_BASE_URL}/{PORTAL_PAGE[task.target_system]}")
         b = self._browser
-        b.navigate(f"{PORTAL_BASE_URL}/{PORTAL_PAGE[task.target_system]}")
         self._settle()
         cid = task.params.get("container_id", "")
 
@@ -155,12 +167,41 @@ class RealComputerUse:
             )
 
         before = save_bytes(f"act_before_{task.target_system.value}_{cid}", b.screenshot())
-        self._cu_loop(_goal(task), allow_financial=True)
-        after = save_bytes(f"act_after_{task.target_system.value}_{cid}", b.screenshot())
-        fields = self._extract(task.target_system, cid)  # verify re-read
+        # The click that settles the charge happens inside the loop. The model may
+        # then navigate/re-render and a LATER step can raise (e.g. TargetClosedError
+        # on a reloading page). That must NOT discard a successful pay, so we swallow
+        # a post-dispatch loop error and always verify GROUND TRUTH by a fresh re-read.
+        try:
+            self._cu_loop(_goal(task), allow_financial=True)
+        except Exception:  # noqa: BLE001 — the pay may already have gone through
+            logger.exception("CU act loop raised; verifying ground truth by re-read")
+        ref = task.params.get("reference")
+        fields = self._verify_reread(task.target_system, cid, ref)
+        after = save_bytes(f"act_after_{task.target_system.value}_{cid}", self._safe_shot())
         verified = fields.get("detention_unpaid") is False or fields.get("paid") is True
         return ActionResult(ok=True, target_system=task.target_system, before_shot=before,
                             after_shot=after, verified=verified, ts=_now())
+
+    def _verify_reread(self, system: System, cid: str, reference: str | None = None) -> dict:
+        """Re-navigate to the portal and re-extract, independent of whatever the CU
+        loop left the browser on — so a successful settlement is always detected.
+        The terminal only renders a charge after a lookup, so re-drive the lookup."""
+        try:
+            self._navigate(f"{PORTAL_BASE_URL}/{PORTAL_PAGE[system]}")
+            self._settle()
+            if system == System.terminal and reference:
+                self._browser.lookup_reference(reference)
+                self._settle()
+            return self._extract(system, cid)
+        except Exception:  # noqa: BLE001
+            logger.exception("verify re-read failed for %s", system.value)
+            return {}
+
+    def _safe_shot(self) -> bytes:
+        try:
+            return self._browser.screenshot()
+        except Exception:  # noqa: BLE001
+            return b""
 
     # ---- the agentic loop --------------------------------------------------
     def _cu_loop(self, goal: str, allow_financial: bool) -> None:

@@ -123,7 +123,7 @@ def test_resume_lossless(tmp_path, monkeypatch):
     resumed = Board.resume("test", db)
     after = resumed.get("MSKU4471")
     assert after.model_dump(mode="json") == before.model_dump(mode="json")
-    assert after.status == ContainerStatus.resolving
+    assert after.status == ContainerStatus.released
 
 
 # --- 6. the full golden path 1->8 -------------------------------------------
@@ -140,7 +140,7 @@ def test_golden_path(engine):
     assert "$340" in c.pending_action.line and "Driver waiting" in c.pending_action.line
 
     c = engine.approve("MSKU4471", c.pending_action.action_id)
-    assert c.status == ContainerStatus.resolving
+    assert c.status == ContainerStatus.released
 
     screenshots = [e for e in c.action_log if e.artifact_path]
     assert len(screenshots) >= 2  # before + after the act

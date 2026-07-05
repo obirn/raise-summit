@@ -322,11 +322,19 @@ class AntigravityBrain:
             prompt = (f"{_ANTIGRAVITY_INSTRUCTION}\nGoal: {ctx.goal}\nContainer held state:\n"
                       + json.dumps(ctx.held_state, default=str))
             return self._create(client, input=prompt, tools=tools, fresh=True)
-        # continue: feed the just-executed tool's result back as a function_result
+        # continue: feed the just-executed tool's result back. The literal Antigravity
+        # AGENT accepts the structured function_result; the plain model variant rejects
+        # it (400) and takes the result as text — both continue the SAME interaction by
+        # previous_interaction_id (durability holds either way).
         last = ctx.steps[-1] if ctx.steps else {}
-        result_step = [{"type": "function_result", "call_id": ctx.pending_call_id or "",
-                        "result": last.get("result", {})}]
-        return self._create(client, input=result_step, tools=tools, fresh=False,
+        if self.variant == "model":
+            cont_input = (f"Result of {last.get('tool', '')}: "
+                          + json.dumps(last.get("result", {}), default=str)
+                          + ". Decide the next single function call.")
+        else:
+            cont_input = [{"type": "function_result", "call_id": ctx.pending_call_id or "",
+                           "result": last.get("result", {})}]
+        return self._create(client, input=cont_input, tools=tools, fresh=False,
                             previous_interaction_id=ctx.previous_interaction_id,
                             environment=ctx.environment_id)
 

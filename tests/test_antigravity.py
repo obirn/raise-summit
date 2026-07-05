@@ -107,7 +107,7 @@ def test_antigravity_load_bearing_resume_by_id(tmp_path, monkeypatch):
     # human approves -> resumed agent continues the SAME server-side interaction by id
     eng2.mark_approved("MSKU4471", after.pending_action.action_id)
     c = mgr2.resume_after_approve("MSKU4471", background=False)
-    assert c.status == ContainerStatus.resolving
+    assert c.status == ContainerStatus.released
     assert c.agent.status == AgentStatus.done
 
 

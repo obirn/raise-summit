@@ -42,9 +42,15 @@ class BrowserComputer:
         return (VIEWPORT_W, VIEWPORT_H)
 
     def is_alive(self) -> bool:
-        """False if the page/context/browser was closed (window shut, crash…)."""
+        """False if the page/context/browser is gone. `page.is_closed()` is only a
+        LOCAL flag — it stays False even when the Playwright driver connection has
+        died ("Connection closed while reading from the driver"), so we also do a
+        cheap round-trip to the driver, which throws if the connection is dead."""
         try:
-            return self.page is not None and not self.page.is_closed()
+            if self.page is None or self.page.is_closed():
+                return False
+            self.page.evaluate("1")  # pings the driver; raises if the pipe is dead
+            return True
         except Exception:  # noqa: BLE001
             return False
 
@@ -63,6 +69,15 @@ class BrowserComputer:
                 dataset: Object.assign({}, el.dataset),
             }))""",
         )
+
+    def lookup_reference(self, reference: str) -> None:
+        """Reveal the terminal charge panel for a reference by driving the rendered
+        UI (fill the lookup field + click Look up). Used by the verify re-read so a
+        settled charge is detectable after re-navigation — display-only, no state
+        change (the pay itself was the CU model's click)."""
+        self.page.fill("[data-field=reference_input]", reference)
+        self.page.click("[data-field=lookup_button]")
+        self.page.wait_for_timeout(250)
 
     # ---- actions (legacy vocabulary; coords in pixels) ---------------------
     def navigate(self, url: str) -> None:

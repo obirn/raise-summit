@@ -234,6 +234,11 @@ class Engine:
         deterministic `approve` runs it immediately)."""
         c = self._require(container_id)
         action = c.pending_action
+        if action is None and c.status in (
+            ContainerStatus.executing, ContainerStatus.verifying,
+            ContainerStatus.resolving, ContainerStatus.released,
+        ):
+            return c  # idempotent: already approved/executing (double-click)
         if not action or action.action_id != action_id:
             raise ValueError(f"no pending action {action_id!r} for {container_id}")
         action.approved = True
@@ -274,12 +279,20 @@ class Engine:
                 t.satisfied = True
                 t.satisfied_by = t.satisfied_by or "gated_out"
         self._set_status(c, ContainerStatus.verifying)
-        # speak the resolution back in the driver's language (§9). DEMO-ONLY: the
-        # scripted driver is Spanish; M3 carries FieldTruth.lang through instead.
-        self.voice.callback(c.id, "ya está pagado, muestra DET-4471-B, ya puedes pasar.", "es")
-        self._audit(c, Actor.voice, "callback: resolution spoken to driver", result="es")
-        c = self._set_status(c, ContainerStatus.resolving)
-        self._emit(events.resolved(c.id))
+        # Speak the resolution back to the driver (§9). The message is authored in
+        # ENGLISH and TRANSLATED to whatever language the driver is actually speaking
+        # by Gemini Live on the open call — that IS the Live Translate value. We do
+        # NOT know the driver's language reliably server-side, so we never hard-code
+        # it (hard-coding "es" is what made every driver hear Spanish).
+        ref = self._known_reference(c) or "the gate reference"
+        message = (f"The charge is paid and the container is released. "
+                   f"Show reference {ref} at the gate — you can go through.")
+        self.voice.callback(c.id, message, "auto")
+        self._audit(c, Actor.voice, f"callback: told driver — {message}", result="auto")
+        # verified pay = the container is released (final green state). Surface the
+        # spoken confirmation to the Site Office so the human sees the driver was told.
+        c = self._set_status(c, ContainerStatus.released)
+        self._emit(events.resolved(c.id, message, "auto"))
         return c
 
     def dismiss(self, container_id: str, alert_id: str) -> Container:
@@ -336,11 +349,21 @@ class Engine:
 
     def tool_execute_approved_action(self, container_id: str) -> dict:
         """Run the approved high-cost action via CU, then verify (invariant 3:
-        only reachable once a human /approve set approved=True)."""
+        only reachable once a human /approve set approved=True).
+
+        Idempotent: if the gate was already consumed (a prior execute paid it and
+        the container is past the gate) this is a benign no-op, not a failure — so
+        a double-click / re-spawn resolves cleanly instead of raising."""
         c = self._require(container_id)
         action = c.pending_action
-        if not action or not action.approved:
-            raise PermissionError("no approved action to execute")
+        if action is None:
+            if c.status in (ContainerStatus.verifying, ContainerStatus.resolving,
+                            ContainerStatus.released):
+                return {"ok": True, "verified": True, "status": c.status.value,
+                        "already_resolved": True}
+            raise PermissionError("no pending action to execute")
+        if not action.approved:  # invariant 3: never pay without the human gate
+            raise PermissionError("action not approved")
         result = self._dispatch_act(c, action)
         c = self._on_action_result(c, result)
         return {"ok": result.ok, "verified": result.verified, "status": c.status.value}

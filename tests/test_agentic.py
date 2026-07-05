@@ -44,7 +44,7 @@ def test_agentic_golden_path(setup):
     # approve -> agent resumes -> executes -> resolving
     engine.mark_approved("MSKU4471", c.pending_action.action_id)
     c = mgr.resume_after_approve("MSKU4471", background=False)
-    assert c.status == ContainerStatus.resolving
+    assert c.status == ContainerStatus.released
     assert c.agent.status == AgentStatus.done
     assert any(s.tool == "execute_approved_action" for s in c.agent.steps)
 
@@ -78,4 +78,4 @@ def test_agent_resume_lossless_mid_gate(setup, tmp_path, monkeypatch):
     mgr2 = AgentManager(engine2, lambda e: None, brain_kind="scripted")
     engine2.mark_approved("MSKU4471", after.pending_action.action_id)
     c = mgr2.resume_after_approve("MSKU4471", background=False)
-    assert c.status == ContainerStatus.resolving
+    assert c.status == ContainerStatus.released

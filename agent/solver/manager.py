@@ -55,6 +55,15 @@ class AgentManager:
     # ---- resume (execute phase, after human /approve) ----------------------
     def resume_after_approve(self, container_id: str, background: bool = True) -> Container | None:
         c = self.engine.board.get(container_id)
+        # Idempotent gate: if the action was already executed (double-click, or an
+        # execute agent is still finishing) don't spawn a second executor.
+        if c is None or c.pending_action is None:
+            logger.info("resume_after_approve: no pending action for %s — skip", container_id)
+            return c
+        t = self.threads.get(container_id)
+        if background and t and t.is_alive():
+            logger.info("resume_after_approve: agent already running for %s — skip", container_id)
+            return c
         agent_id = c.agent.agent_id if (c and c.agent) else self._next_id(container_id)
         agent = self._make(agent_id, container_id, hint_system=None)
         goal = (c.agent.goal if (c and c.agent) else "") or f"Unblock stuck container {container_id}"

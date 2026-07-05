@@ -85,17 +85,25 @@ class SolverAgent:
         self.ensure_state(goal)
         for _ in range(self.max_steps):
             c = self._get()
-            ctx = BrainContext(
-                container_id=self.container_id, goal=c.agent.goal if c.agent else goal,
-                phase=phase, held_state=self._held_state(c),
-                steps=[{"tool": s.tool, "args": s.args, "result": s.result}
-                       for s in (c.agent.steps if c.agent else [])],
-                # durable Antigravity handles (resume the SAME server-side reasoning)
-                previous_interaction_id=c.agent.previous_interaction_id if c.agent else None,
-                environment_id=c.agent.environment_id if c.agent else None,
-                pending_call_id=c.agent.pending_call_id if c.agent else None,
-            )
-            call = self.brain.next_action(ctx)          # LLM / FSM — outside lock
+            if phase == "execute":
+                # Post-approval: the human already chose the action — there is
+                # nothing left to reason about, so we DON'T ask the LLM brain
+                # (which has no signal that /approve happened and would answer
+                # `done`/re-surface, leaving the gate stuck). Carry out the
+                # approved fix deterministically for every brain. CU still clicks.
+                call = self._execute_phase_action(c)
+            else:
+                ctx = BrainContext(
+                    container_id=self.container_id, goal=c.agent.goal if c.agent else goal,
+                    phase=phase, held_state=self._held_state(c),
+                    steps=[{"tool": s.tool, "args": s.args, "result": s.result}
+                           for s in (c.agent.steps if c.agent else [])],
+                    # durable Antigravity handles (resume the SAME server-side reasoning)
+                    previous_interaction_id=c.agent.previous_interaction_id if c.agent else None,
+                    environment_id=c.agent.environment_id if c.agent else None,
+                    pending_call_id=c.agent.pending_call_id if c.agent else None,
+                )
+                call = self.brain.next_action(ctx)      # LLM / FSM — outside lock
             with self.lock:
                 result, terminal_status = self._exec(call)
                 self._record(call, result, terminal_status)
@@ -108,6 +116,14 @@ class SolverAgent:
                                              terminal_status.value))
                 break
         return self._get()
+
+    def _execute_phase_action(self, c: Container) -> ToolCall:
+        """Deterministic post-approval sequence: run the approved action once,
+        then finish. Independent of the brain so the human gate never stalls."""
+        steps = c.agent.steps if c.agent else []
+        if not any(s.tool == "execute_approved_action" for s in steps):
+            return ToolCall("execute_approved_action", {})
+        return ToolCall("done", {"summary": "resolved"})
 
     def _exec(self, call: ToolCall) -> tuple[dict, AgentStatus | None]:
         n, a = call.name, call.args

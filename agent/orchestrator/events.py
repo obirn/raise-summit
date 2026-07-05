@@ -28,8 +28,9 @@ def transcript(container_id: str | None, speaker: str, text: str) -> dict:
             "speaker": speaker, "text": text}
 
 
-def resolved(container_id: str) -> dict:
-    return {"type": "resolved", "container_id": container_id}
+def resolved(container_id: str, message: str = "", lang: str = "") -> dict:
+    return {"type": "resolved", "container_id": container_id,
+            "message": message, "lang": lang}
 
 
 def agent_spawned(container_id: str, agent_id: str, goal: str, brain: str) -> dict:
