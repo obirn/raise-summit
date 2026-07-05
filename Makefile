@@ -1,0 +1,54 @@
+# Unblock — one-command demo control (see CLAUDE.md).
+# Targets delegate to scripts/ which activate the Python venv + Node (nvm).
+SHELL := /usr/bin/env bash
+.PHONY: setup demo demo-cu agentic golden reset kill resume test build lint cu-smoke voice antigravity-probe stop
+
+stop:   ## full teardown: orchestrator + vite + voice bridge + the CU headful browser
+	- pkill -f "agent.orchestrator.app"; pkill -f "agent.voice.twilio_bridge"; \
+	  pkill -f "node.*vite"; pkill -f "user-data-dir=.*cu_profile"; true
+	@echo "stopped all demo processes"
+
+setup:  ## install Python + Node deps + Playwright Chromium
+	. scripts/env.sh && pip install -q -r requirements.txt && \
+	  python -m playwright install chromium && npm install --no-audit --no-fund
+
+demo:   ## boot portals + orchestrator + coordinator UI (stub CU)
+	bash scripts/demo.sh
+
+demo-cu: ## same as demo but with REAL Gemini Computer Use (needs GEMINI_API_KEY + display)
+	CU_MODE=real bash scripts/demo.sh
+
+agentic: ## demo with LLM solver agents (AGENT_MODE=agentic). Add CU_MODE=real for real clicks.
+	AGENT_MODE=agentic AGENT_BRAIN=$${AGENT_BRAIN:-gemini} bash scripts/demo.sh
+
+antigravity-probe: ## check if the experimental antigravity-preview-05-2026 agent is reachable
+	. scripts/env.sh && python scripts/antigravity_probe.py
+
+cu-smoke: ## one live CU read of the terminal portal (needs the Vite server running)
+	. scripts/env.sh && python scripts/cu_smoke.py
+
+voice:  ## run the Twilio<->Gemini-Live bridge (:8080). DEMO-ONLY: needs ngrok + a Twilio number
+	. scripts/env.sh && uvicorn agent.voice.twilio_bridge:app --host 0.0.0.0 --port 8080
+	@echo "Expose with: ngrok http 8080 ; point the Twilio number's Voice webhook at https://<ngrok>/voice"
+
+golden: ## drive the golden path 1->9 (incl. live kill/resume) via the public API
+	bash scripts/golden.sh
+
+reset:  ## wipe board DB + artifacts + browser profile and re-seed deterministically
+	. scripts/env.sh && rm -f "$$BOARD_DB_PATH" && rm -rf "$$ARTIFACTS_DIR" "$$CU_PROFILE_DIR" && \
+	  python -c "from agent.board.board import Board; from seed.scenario import seed_board, DEMO_NOW; seed_board(Board(), DEMO_NOW); print('re-seeded', Board().all().__len__(), 'containers')"
+
+kill:   ## stop the orchestrator mid-run (proves invariant 4 with `resume`)
+	- pkill -f "agent.orchestrator.app" && echo "orchestrator killed"
+
+resume: ## restart the orchestrator; it re-hydrates the board from SQLite
+	. scripts/env.sh && uvicorn agent.orchestrator.app:app --host 0.0.0.0 --port "$$ORCH_PORT"
+
+test:   ## unit + integration acceptance tests (§12), no network
+	. scripts/env.sh && python -m pytest tests/ -q
+
+build:  ## typecheck + build all Vite pages
+	. scripts/env.sh && npm run build
+
+lint:   ## oxlint the frontend
+	. scripts/env.sh && npm run lint
