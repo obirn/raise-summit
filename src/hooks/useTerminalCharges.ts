@@ -7,6 +7,16 @@ import {
 } from '../lib/terminalChargesStorage'
 
 /**
+ * Normalize a gate reference for tolerant matching: drop everything but letters
+ * and digits, uppercase. So "DET-4471-B", "det 4471 b" and a voice-mangled
+ * "DET447.1B" all match the same charge (real gate references arrive over the
+ * phone via ASR, which drops dashes / adds dots).
+ */
+function normalizeRef(reference: string): string {
+  return reference.toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+
+/**
  * Terminal gate charges with immediate localStorage persistence. A "Pay &
  * release" click flips `paid` so any subsequent read (re-mount, another tab,
  * or Computer Use re-reading the page) sees the change.
@@ -21,18 +31,18 @@ export function useTerminalCharges() {
 
   const findByReference = useCallback(
     (reference: string): TerminalCharge | undefined => {
-      const key = reference.trim().toUpperCase()
-      return charges.find((c) => c.reference.toUpperCase() === key)
+      const key = normalizeRef(reference)
+      return charges.find((c) => normalizeRef(c.reference) === key)
     },
     [charges],
   )
 
   const payCharge = useCallback(
     (reference: string) => {
-      const key = reference.trim().toUpperCase()
+      const key = normalizeRef(reference)
       persist(
         charges.map((c) =>
-          c.reference.toUpperCase() === key ? { ...c, paid: true, paidAt: nowStamp() } : c,
+          normalizeRef(c.reference) === key ? { ...c, paid: true, paidAt: nowStamp() } : c,
         ),
       )
     },

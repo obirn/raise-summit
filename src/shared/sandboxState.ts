@@ -19,6 +19,17 @@ export const configB: SandboxState = {
   terminal_invoice_paid: false,
 }
 
+// MSKU4471 golden path: customs RELEASED (HS 950300); the ONLY blocker is the
+// hidden terminal detention. Keeps the customs portal consistent with the ICS2
+// register the agent reads (no contradictory "REJECTED" panel).
+export const configReleased: SandboxState = {
+  tms_status: 'PENDING RELEASE',
+  carrier_status: 'NO HOLD',
+  customs_status: 'RELEASED',
+  customs_hs_code: VALID_HS_CODE,
+  terminal_invoice_paid: false,
+}
+
 export function deriveTmsStatus(next: SandboxState): SandboxState {
   if (next.customs_status === 'RELEASED' && next.terminal_invoice_paid) {
     return { ...next, tms_status: 'TRUE RELEASE' }
@@ -32,7 +43,7 @@ export function deriveTmsStatus(next: SandboxState): SandboxState {
 }
 
 export function useSandboxState() {
-  const [sandbox, setSandbox] = useState<SandboxState>(configA)
+  const [sandbox, setSandbox] = useState<SandboxState>(configReleased)
 
   return {
     sandbox,

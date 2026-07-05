@@ -1,6 +1,6 @@
-import { configA } from '../shared/sandboxState'
+import { configReleased } from '../shared/sandboxState'
 import { TMSDashboard } from '../tabs/TMSDashboard'
 
 export function TmsDesktopApp() {
-  return <TMSDashboard state={configA} />
+  return <TMSDashboard state={configReleased} />
 }
