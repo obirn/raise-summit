@@ -302,6 +302,11 @@ async def _run_session(websocket, session, stream_sid, call_sid, resample_state,
         while call_active and not go_away:
             turn += 1
             saw_response = False
+            # Gemini Live streams transcription in small INCREMENTAL deltas; we
+            # accumulate per turn and flush ONE clean line per speaker at
+            # turn_complete (instead of a UI line — and an HTTP POST — per
+            # fragment, which looked choppy and added latency).
+            driver_buf, agent_buf = "", ""
             async for response in session.receive():
                 saw_response = True
                 if response.go_away:
@@ -323,13 +328,9 @@ async def _run_session(websocket, session, stream_sid, call_sid, resample_state,
                         # buffer audio déjà envoyé à Twilio pour éviter le chevauchement.
                         await websocket.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
                     if server_content.input_transcription and server_content.input_transcription.text:
-                        text = server_content.input_transcription.text
-                        logger.info("[chauffeur] %s", text)
-                        _notify_bg("/events/transcript", {"speaker": "driver", "text": text})
+                        driver_buf += server_content.input_transcription.text
                     if server_content.output_transcription and server_content.output_transcription.text:
-                        text = server_content.output_transcription.text
-                        logger.info("[agent] %s", text)
-                        _notify_bg("/events/transcript", {"speaker": "agent", "text": text})
+                        agent_buf += server_content.output_transcription.text
 
                 if response.tool_call:
                     for fc in response.tool_call.function_calls:
@@ -350,10 +351,16 @@ async def _run_session(websocket, session, stream_sid, call_sid, resample_state,
                     await websocket.send_text(
                         json.dumps({"event": "media", "streamSid": stream_sid, "media": {"payload": payload}})
                     )
-            # fin d'un tour (turn_complete) -> on reboucle sur receive() pour
-            # écouter la réponse du chauffeur, l'appel reste ouvert. Si receive()
-            # n'a rien renvoyé, la session Gemini est fermée -> on sort (évite un
-            # spin ; _bridge_call reconnecte si l'appel Twilio tient toujours).
+            # fin d'un tour (turn_complete) -> flush une ligne propre par locuteur,
+            # puis on reboucle sur receive() pour écouter la réponse du chauffeur
+            # (l'appel reste ouvert). Si receive() n'a rien renvoyé, la session
+            # Gemini est fermée -> on sort (évite un spin ; _bridge_call reconnecte).
+            if driver_buf.strip():
+                logger.info("[chauffeur] %s", driver_buf.strip())
+                _notify_bg("/events/transcript", {"speaker": "driver", "text": driver_buf.strip()})
+            if agent_buf.strip():
+                logger.info("[agent] %s", agent_buf.strip())
+                _notify_bg("/events/transcript", {"speaker": "agent", "text": agent_buf.strip()})
             logger.info("[gemini->twilio] fin tour=%d (saw_response=%s call_active=%s go_away=%s) callSid=%s",
                         turn, saw_response, call_active, go_away, call_sid)
             if not saw_response:
