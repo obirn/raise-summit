@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle2, PhoneCall, Play, Radio } from 'lucide-react'
+import { AlertTriangle, Bot, CheckCircle2, PhoneCall, Play, Radio } from 'lucide-react'
 
 // The orchestrator is the ONLY interface this UI uses (MASTER_PROMPT §3).
 const ORCH = (import.meta as { env?: Record<string, string> }).env?.VITE_ORCH_URL ?? 'http://localhost:5000'
@@ -46,8 +46,25 @@ function artifactUrl(path: string | null): string | null {
   return `${ORCH}/artifacts/${base}`
 }
 
+type Agent = {
+  agent_id: string
+  container_id: string
+  brain: string
+  status: string
+  step: string
+}
+
+const AGENT_TONE: Record<string, string> = {
+  planning: 'border-cyan-600 text-cyan-300',
+  awaiting_human: 'border-orange-500 text-orange-300',
+  executing: 'border-blue-500 text-blue-300',
+  done: 'border-emerald-600 text-emerald-300',
+  failed: 'border-red-600 text-red-300',
+}
+
 export function CoordinatorApp() {
   const [containers, setContainers] = useState<Record<string, Container>>({})
+  const [agents, setAgents] = useState<Record<string, Agent>>({})
   const [connected, setConnected] = useState(false)
   const [driverOnLine, setDriverOnLine] = useState(false)
   const [transcript, setTranscript] = useState<{ speaker: string; text: string }[]>([])
@@ -76,6 +93,28 @@ export function CoordinatorApp() {
           setTranscript((prev) => [...prev, { speaker: msg.speaker, text: msg.text }])
         } else if (msg.type === 'resolved') {
           setDriverOnLine(false)
+        } else if (msg.type === 'agent_spawned') {
+          setAgents((prev) => ({
+            ...prev,
+            [msg.agent_id]: {
+              agent_id: msg.agent_id, container_id: msg.container_id,
+              brain: msg.brain, status: 'planning', step: msg.goal,
+            },
+          }))
+        } else if (msg.type === 'agent_step') {
+          setAgents((prev) => ({
+            ...prev,
+            [msg.agent_id]: {
+              ...(prev[msg.agent_id] ?? { agent_id: msg.agent_id, container_id: msg.container_id, brain: '' }),
+              status: msg.status, step: msg.summary,
+            } as Agent,
+          }))
+        } else if (msg.type === 'agent_done') {
+          setAgents((prev) =>
+            prev[msg.agent_id]
+              ? { ...prev, [msg.agent_id]: { ...prev[msg.agent_id], status: msg.status } }
+              : prev,
+          )
         }
       }
     }
@@ -102,6 +141,10 @@ export function CoordinatorApp() {
     [containers],
   )
   const surfaced = rows.find((c) => c.pending_action)
+  const activeAgents = useMemo(
+    () => Object.values(agents).sort((a, b) => a.container_id.localeCompare(b.container_id)),
+    [agents],
+  )
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -165,6 +208,30 @@ export function CoordinatorApp() {
                 <p key={i} className={t.speaker === 'agent' ? 'text-cyan-200' : 'text-slate-300'}>
                   <span className="opacity-60">[{t.speaker}]</span> {t.text}
                 </p>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Agents at work — the orchestrator spawns one solver agent per stuck container */}
+        {activeAgents.length > 0 && (
+          <section className="mb-6">
+            <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-slate-500">
+              <Bot size={13} /> Agents at work
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {activeAgents.map((a) => (
+                <div key={a.agent_id} className={`rounded-lg border bg-slate-900/60 p-3 ${AGENT_TONE[a.status] ?? 'border-slate-700 text-slate-300'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-sm font-bold text-slate-100">{a.container_id}</span>
+                    <span className="font-mono text-[10px] uppercase tracking-wider">{a.status}</span>
+                  </div>
+                  <p className="mt-1 font-mono text-[10px] text-slate-500">{a.agent_id} · {a.brain}</p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    {a.status === 'planning' && <span className="animate-pulse">▸ </span>}
+                    {a.step}
+                  </p>
+                </div>
               ))}
             </div>
           </section>

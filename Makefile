@@ -1,7 +1,7 @@
 # Unblock — one-command demo control (see CLAUDE.md).
 # Targets delegate to scripts/ which activate the Python venv + Node (nvm).
 SHELL := /usr/bin/env bash
-.PHONY: setup demo demo-cu golden reset kill resume test build lint cu-smoke voice
+.PHONY: setup demo demo-cu agentic golden reset kill resume test build lint cu-smoke voice antigravity-probe
 
 setup:  ## install Python + Node deps + Playwright Chromium
 	. scripts/env.sh && pip install -q -r requirements.txt && \
@@ -12,6 +12,12 @@ demo:   ## boot portals + orchestrator + coordinator UI (stub CU)
 
 demo-cu: ## same as demo but with REAL Gemini Computer Use (needs GEMINI_API_KEY + display)
 	CU_MODE=real bash scripts/demo.sh
+
+agentic: ## demo with LLM solver agents (AGENT_MODE=agentic). Add CU_MODE=real for real clicks.
+	AGENT_MODE=agentic AGENT_BRAIN=$${AGENT_BRAIN:-gemini} bash scripts/demo.sh
+
+antigravity-probe: ## check if the experimental antigravity-preview-05-2026 agent is reachable
+	. scripts/env.sh && python scripts/antigravity_probe.py
 
 cu-smoke: ## one live CU read of the terminal portal (needs the Vite server running)
 	. scripts/env.sh && python scripts/cu_smoke.py

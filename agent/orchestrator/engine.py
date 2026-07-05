@@ -123,13 +123,20 @@ class Engine:
         return None
 
     # ---- transitions -------------------------------------------------------
+    def begin_diagnosis(self, container_id: str, responsible: System | None = None,
+                        kind: AlertKind = AlertKind.OVERDUE) -> Container:
+        """monitoring -> diagnosing (shared by the deterministic path and the
+        agentic path). Audits the alert and flips status; does NOT read portals."""
+        c = self._require(container_id)
+        self._audit(c, Actor.monitor,
+                    f"{kind.value} fired (responsible={responsible.value if responsible else '-'})")
+        return self._set_status(c, ContainerStatus.diagnosing)
+
     def on_alert(self, container_id: str, responsible: System | None,
                  kind: AlertKind = AlertKind.OVERDUE) -> Container:
-        """monitoring -> diagnosing: dispatch a read to the responsible system."""
-        c = self._require(container_id)
-        self._audit(c, Actor.monitor, f"{kind.value} fired (responsible={responsible.value if responsible else '-'})")
-        self._set_status(c, ContainerStatus.diagnosing)
-        return self.diagnose(c, first=responsible)
+        """Deterministic path: begin diagnosis, then run the hardcoded read sweep."""
+        self.begin_diagnosis(container_id, responsible, kind)
+        return self.diagnose(self._require(container_id), first=responsible)
 
     def diagnose(self, c: Container, first: System | None = None) -> Container:
         """Read the fired system, then upstream to rule out. Fuse a Blocker or
@@ -180,10 +187,9 @@ class Engine:
         logger.info("SURFACED: %s [%s]", line, label)
         return c
 
-    def on_call(self, hint: str | None = None) -> Container:
-        """EVENT — the *pull* path (scripted demo). Ask the voice channel for the
-        FieldTruth, then ingest it. The real telephony bridge uses the *push*
-        path (`ingest_field_truth`) instead; both converge on the same logic."""
+    def take_call_truth(self, hint: str | None = None) -> FieldTruth:
+        """Run the voice channel, stream the transcript to the UI, and return the
+        extracted FieldTruth (without ingesting it — the caller routes it by mode)."""
         self._emit(events.call_started(None))
         # container id is only known once the driver states it; stream transcript
         # to the UI as it arrives (unattached until we learn the id).
@@ -194,13 +200,16 @@ class Engine:
 
         truth = self.voice.take_call(hint=hint, on_transcript=_sink)
         heard["cid"] = truth.container_id
-        return self.ingest_field_truth(truth)
+        return truth
 
-    def ingest_field_truth(self, truth: FieldTruth) -> Container:
-        """EVENT — the *push* entrypoint. Given a FieldTruth (from the scripted
-        stub OR a real driver call via the Twilio bridge), write the voice Blocker
-        and run a targeted terminal read WITH the reference, which reveals the
-        hidden detention on screen (invariant 6)."""
+    def on_call(self, hint: str | None = None) -> Container:
+        """EVENT — the *pull* path (scripted demo, deterministic mode)."""
+        return self.ingest_field_truth(self.take_call_truth(hint))
+
+    def record_voice_truth(self, truth: FieldTruth) -> Container:
+        """Write the voice Blocker (reference from the driver call) and flip to
+        diagnosing. Shared by the deterministic and agentic push paths; does NOT
+        read portals."""
         c = self._require(truth.container_id)
         self._emit(events.call_started(c.id))
         voice_blocker = Blocker(
@@ -211,12 +220,18 @@ class Engine:
         c.blockers = [b for b in c.blockers if b.discovered_via != DiscoveredVia.voice] + [voice_blocker]
         self._audit(c, Actor.voice, f"call: {truth.blocker_type} ref={truth.reference}",
                     result=truth.raw_transcript[:200])
-        self._set_status(c, ContainerStatus.diagnosing)
-        # targeted read with the reference now reveals the detention on screen
+        return self._set_status(c, ContainerStatus.diagnosing)
+
+    def ingest_field_truth(self, truth: FieldTruth) -> Container:
+        """Deterministic path: record the voice truth, then a targeted terminal
+        read WITH the reference reveals the hidden detention (invariant 6)."""
+        c = self.record_voice_truth(truth)
         return self.diagnose(c, first=System.terminal)
 
-    def approve(self, container_id: str, action_id: str) -> Container:
-        """awaiting_action + /approve -> executing -> verifying -> resolving."""
+    def mark_approved(self, container_id: str, action_id: str) -> Container:
+        """Human /approve: mark the pending action approved + flip to executing.
+        Does NOT run the act (the agentic path lets the agent execute; the
+        deterministic `approve` runs it immediately)."""
         c = self._require(container_id)
         action = c.pending_action
         if not action or action.action_id != action_id:
@@ -224,8 +239,12 @@ class Engine:
         action.approved = True
         c.pending_action = action
         self._audit(c, Actor.human, f"approved: {action.goal}")
-        self._set_status(c, ContainerStatus.executing)
-        result = self._dispatch_act(c, action)
+        return self._set_status(c, ContainerStatus.executing)
+
+    def approve(self, container_id: str, action_id: str) -> Container:
+        """Deterministic path: /approve -> executing -> act -> verifying -> resolving."""
+        c = self.mark_approved(container_id, action_id)  # -> executing
+        result = self._dispatch_act(c, c.pending_action)
         return self._on_action_result(c, result)
 
     def _dispatch_act(self, c: Container, action: PendingAction) -> ActionResult:
@@ -270,6 +289,61 @@ class Engine:
         c.pending_action = None
         self._audit(c, Actor.human, f"dismissed alert {alert_id}")
         return self._set_status(c, ContainerStatus.moving)
+
+    # ---- agent tool-primitives ---------------------------------------------
+    # Thin, JSON-friendly wrappers the SolverAgent's brain calls as tools. They
+    # reuse the same transitions as the deterministic path, so all invariants
+    # (CU-only reads, human gate, audit, durable board) hold identically.
+    def tool_read_portal(self, container_id: str, system: str,
+                         reference: str | None = None) -> dict:
+        """Read one portal via Computer Use (auto, invariant 2). Returns the
+        parsed fields + any binding blocker found (or null = clean)."""
+        c = self._require(container_id)
+        sys = System(system)
+        ref = reference or (self._known_reference(c) if sys == System.terminal else None)
+        obs = self._read(c, sys, reference=ref)
+        blocker = self._interpret(c, obs)
+        return {
+            "system": sys.value,
+            "fields": obs.fields,
+            "blocker": None if blocker is None else {
+                "type": blocker.type, "source_system": blocker.source_system.value,
+                "evidence": blocker.evidence, "reference": blocker.reference,
+            },
+        }
+
+    def tool_surface_blocker(self, container_id: str, blocker_type: str,
+                             source_system: str, evidence: str,
+                             reference: str | None = None) -> dict:
+        """Surface a binding blocker to the human (one-tap gate). PAUSES here —
+        no high-cost action runs until /approve (invariant 3)."""
+        c = self._require(container_id)
+        ref = reference or self._known_reference(c)
+        blocker = Blocker(source_system=System(source_system), type=blocker_type,
+                          evidence=evidence, is_binding=True,
+                          discovered_via=DiscoveredVia.screen, reference=ref)
+        c = self._fuse_blocker(c, blocker)  # -> awaiting_action + surfaced_line
+        return {"status": "awaiting_human",
+                "line": c.pending_action.line if c.pending_action else ""}
+
+    def tool_mark_unlocatable(self, container_id: str, reason: str = "") -> dict:
+        """No blocker on any accessible portal -> wait for exogenous (voice) truth."""
+        c = self._require(container_id)
+        self._audit(c, Actor.agent,
+                    f"cause not on any accessible portal{f' ({reason})' if reason else ''}")
+        self._set_status(c, ContainerStatus.stalled_unlocatable)
+        return {"status": "stalled_unlocatable"}
+
+    def tool_execute_approved_action(self, container_id: str) -> dict:
+        """Run the approved high-cost action via CU, then verify (invariant 3:
+        only reachable once a human /approve set approved=True)."""
+        c = self._require(container_id)
+        action = c.pending_action
+        if not action or not action.approved:
+            raise PermissionError("no approved action to execute")
+        result = self._dispatch_act(c, action)
+        c = self._on_action_result(c, result)
+        return {"ok": result.ok, "verified": result.verified, "status": c.status.value}
 
     # ---- helpers -----------------------------------------------------------
     def _known_reference(self, c: Container) -> str | None:

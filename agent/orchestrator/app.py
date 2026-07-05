@@ -26,6 +26,7 @@ from ..computer_use.base import ComputerUse
 from ..computer_use.stub import StubComputerUse
 from ..monitoring.engine import tick
 from ..voice.stub import StubVoice
+from ..solver.manager import AgentManager
 from . import events as ev
 from .engine import Engine
 from seed.scenario import DEMO_NOW, seed_board
@@ -35,6 +36,9 @@ load_dotenv()
 ENV_ID = os.environ.get("ENV_ID", "default")
 DB_PATH = os.environ.get("BOARD_DB_PATH", "board.db")
 CU_MODE = os.environ.get("CU_MODE", "stub")  # stub (deterministic) | real (Gemini CU)
+# deterministic (hardcoded diagnose) | agentic (LLM solver agents spawn per container)
+AGENT_MODE = os.environ.get("AGENT_MODE", "deterministic")
+AGENT_BRAIN = os.environ.get("AGENT_BRAIN", "scripted")  # scripted (offline) | gemini
 
 
 def _make_cu() -> ComputerUse:
@@ -72,6 +76,9 @@ board = Board.resume(ENV_ID, DB_PATH)
 if not board.all():
     seed_board(board, DEMO_NOW)
 engine = Engine(board, _make_cu(), StubVoice(), on_event=manager.broadcast)
+# Agentic layer: the orchestrator spawns one durable solver agent per stuck
+# container (only used when AGENT_MODE=agentic).
+agents = AgentManager(engine, manager.broadcast, brain_kind=AGENT_BRAIN)
 
 app = FastAPI(title="Unblock orchestrator")
 app.add_middleware(
@@ -109,7 +116,12 @@ class CallBody(BaseModel):
 
 @app.post("/approve", status_code=202)
 def approve(body: ApproveBody) -> dict:
-    engine.approve(body.container_id, body.action_id)
+    if AGENT_MODE == "agentic":
+        # human approves -> the solver agent resumes and executes the fix
+        engine.mark_approved(body.container_id, body.action_id)
+        agents.resume_after_approve(body.container_id)
+    else:
+        engine.approve(body.container_id, body.action_id)
     return {"accepted": True}
 
 
@@ -123,7 +135,12 @@ def dismiss(body: DismissBody) -> dict:
 def inbound_call(body: CallBody) -> dict:
     """Pull path — scripted demo. The real telephony bridge uses the push
     endpoints below instead."""
-    engine.on_call(hint=body.container_id)
+    if AGENT_MODE == "agentic":
+        truth = engine.take_call_truth(hint=body.container_id)
+        engine.record_voice_truth(truth)
+        agents.spawn(truth.container_id, hint_system="terminal")
+    else:
+        engine.on_call(hint=body.container_id)
     return {"accepted": True}
 
 
@@ -150,10 +167,15 @@ class TranscriptBody(BaseModel):
 def field_truth(body: FieldTruthBody) -> dict:
     """A real driver call yielded the exact reference. Drives the same flow as
     the scripted demo: targeted terminal read -> surfaced line -> human gate."""
-    engine.ingest_field_truth(FieldTruth(
+    truth = FieldTruth(
         container_id=body.container_id, blocker_type=body.blocker_type,
         reference=body.reference, lang=body.lang, raw_transcript=body.raw_transcript,
-    ))
+    )
+    if AGENT_MODE == "agentic":
+        engine.record_voice_truth(truth)
+        agents.spawn(truth.container_id, hint_system="terminal")
+    else:
+        engine.ingest_field_truth(truth)
     return {"accepted": True}
 
 
@@ -179,7 +201,13 @@ def monitor_tick() -> dict:
     for a in sorted(alerts, key=lambda x: -x.severity):
         if a.kind in (AlertKind.OVERDUE, AlertKind.STALL) and a.container_id not in seen:
             seen.add(a.container_id)
-            engine.on_alert(a.container_id, a.responsible_system, a.kind)
+            if AGENT_MODE == "agentic":
+                # spawn a durable solver agent for this container (parallel portfolio)
+                engine.begin_diagnosis(a.container_id, a.responsible_system, a.kind)
+                agents.spawn(a.container_id,
+                             hint_system=a.responsible_system.value if a.responsible_system else None)
+            else:
+                engine.on_alert(a.container_id, a.responsible_system, a.kind)
             dispatched.append(a.container_id)
     return {"accepted": True, "dispatched": dispatched,
             "alerts": [a.model_dump(mode="json") for a in alerts]}

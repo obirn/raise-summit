@@ -68,6 +68,7 @@ class Actor(str, Enum):
     cu = "cu"
     voice = "voice"
     human = "human"
+    agent = "agent"     # the LLM solver agent (planning decisions)
 
 
 # ---- container-held state --------------------------------------------------
@@ -128,6 +129,35 @@ class PendingAction(BaseModel):
     approved: bool = False
 
 
+class AgentStatus(str, Enum):
+    planning = "planning"            # reasoning + reading portals
+    awaiting_human = "awaiting_human"  # paused at the human gate (surfaced)
+    executing = "executing"          # approved -> CU acting
+    done = "done"                    # resolved
+    failed = "failed"                # gave up / escalated
+
+
+class AgentStep(BaseModel):
+    ts: datetime
+    tool: str                        # read_portal | surface_blocker | ... | done
+    args: dict = Field(default_factory=dict)
+    result: dict = Field(default_factory=dict)
+    summary: str = ""                # short human line for the UI
+
+
+class AgentState(BaseModel):
+    """A durable, resumable solver agent bound to one container (the 'Antigravity'
+    capability). Persisted on the board; killing the process mid-run and resuming
+    re-hydrates the agent's plan and step log."""
+    agent_id: str
+    container_id: str
+    status: AgentStatus = AgentStatus.planning
+    goal: str = ""
+    steps: list[AgentStep] = Field(default_factory=list)
+    brain: str = "scripted"          # scripted | gemini | antigravity
+    previous_interaction_id: str | None = None  # Antigravity/Interactions resume handle
+
+
 class Container(BaseModel):
     id: str
     carrier: str
@@ -139,6 +169,7 @@ class Container(BaseModel):
     action_log: list[AuditEntry] = Field(default_factory=list)
     alerts: list[Alert] = Field(default_factory=list)
     pending_action: PendingAction | None = None
+    agent: AgentState | None = None            # the solver agent working this container
     env_id: str = "default"
     last_progress_at: datetime | None = None   # for DWELL/STALL math
 

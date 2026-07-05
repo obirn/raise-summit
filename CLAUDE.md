@@ -88,7 +88,26 @@ same flow as the scripted demo (targeted terminal read → surfaced line → hum
 `make voice` (`:8080`) + ngrok + Twilio webhook (`DEMO-ONLY`). Verified: live push path
 `field-truth → resolving`; `make test` **12/12** stays offline on the stub.
 
-**M4 (next):** audit polish, MASTER_PROMPT.md, hardening; optional real `voice.callback`.
+**M5 status (built + tested):** agentic layer. `AGENT_MODE=agentic` makes the orchestrator
+**spawn one durable solver agent per stuck container** ([agent/solver/](agent/solver/)); each
+reasons with Gemini **function calling** (`agent/solver/brain.py`, `AGENT_MODEL`) to plan which
+portals to read/act, calls the engine tool-primitives (`tool_read_portal` / `tool_surface_blocker`
+/ `tool_mark_unlocatable` / `tool_execute_approved_action`) which reuse the **same** transitions
+(so all 7 invariants hold: CU-only reads, human gate, audit, resumable board). State persists on
+`Container.agent` (AgentState) → **resumable by agent_id** (the "Antigravity" capability). Two-tier:
+the planner decides, the **Computer Use worker clicks** (keeps our headful local browser + inv 1).
+`ScriptedBrain` keeps it offline (15/15 tests); the real Gemini brain surfaced $340 live. The
+deterministic state machine remains the `AGENT_MODE=deterministic` default. Run: `make agentic`.
+
+**Antigravity note:** the *product* is an agentic IDE with **no backend SDK** — not embeddable.
+But `google-genai` 2.10's experimental `client.interactions.create(agent="antigravity-preview-05-2026",
+environment={"type":"remote"}, store, background, previous_interaction_id)` **is reachable with our
+key** (`make antigravity-probe` created an interaction). Its agent runs in a remote sandbox, so
+using it to drive our localhost portals needs a public URL — a documented follow-up, not the
+current path (our own solver agents + local CU are the working implementation).
+
+**M4 (next):** audit polish, MASTER_PROMPT.md, hardening; optional real `voice.callback`; optional
+`AntigravityBrain` (needs portals on a public URL).
 
 ---
 

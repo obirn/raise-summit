@@ -10,6 +10,7 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
 | M1 | Orchestration skeleton (board, monitoring, state machine, gate, UI) — stubs for CU/voice | ✅ done | `make test` 9/9, `make golden` incl. live kill/resume |
 | M2 | Real Gemini Computer Use + Playwright; carrier/terminal portals | ✅ done | live full golden path under `CU_MODE=real`; `make cu-smoke` |
 | M3 | Real Live Translate voice — Twilio↔Gemini-Live bridge integrated | ✅ done | phone-tested (user) + live push path `field-truth`→`resolving`; 12/12 tests |
+| M5 | Agentic layer — orchestrator spawns durable solver agents that drive Computer Use | ✅ done | 15/15 tests; real Gemini planner surfaced $340 live; Antigravity API reachable |
 | M4 | Audit polish, hardening, MASTER_PROMPT.md, final pass | ⬜ next | — |
 
 ## What works today (verified)
@@ -29,6 +30,17 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
   twilio_bridge.py`, phone-tested). On the driver's `flag_blocked_at_gate` tool-call it POSTs
   `/events/field-truth` → same flow as the scripted demo; also streams `call-started` +
   live transcript to the Site Office. Scripted `StubVoice` stays the offline default.
+- **Agentic layer** (`AGENT_MODE=agentic`): the orchestrator **spawns one durable solver agent
+  per stuck container** (parallel portfolio). Each agent reasons with Gemini function-calling
+  (`agent/solver/`), drives **our** Computer Use to read/act on the portals, surfaces to the
+  human gate, and persists its plan on the board (resumable by `agent_id` = "Antigravity").
+  Two-tier: planner (`AGENT_MODEL`) decides, CU worker clicks. `ScriptedBrain` keeps it offline
+  for tests; the real Gemini brain planned `read terminal(DET-4471-B)`→`surface $340` live. The
+  deterministic state machine stays as the `AGENT_MODE=deterministic` fallback (12 tests).
+- **Antigravity**: the *product* is an IDE (no backend SDK), but the experimental
+  `client.interactions.create(agent="antigravity-preview-05-2026", environment=…)` **is reachable
+  with our key** (probe created an interaction). Its managed agent runs in a remote sandbox, so
+  driving our localhost portals with it needs a public URL — a follow-up, not the current path.
 
 ## Commands
 
@@ -39,6 +51,8 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
 | `make demo-cu` | same, with **real** Gemini Computer Use (needs `GEMINI_API_KEY` + display) |
 | `make cu-smoke` | one live CU read of the terminal portal (Vite server must be up) |
 | `make voice` | run the Twilio↔Gemini-Live bridge `:8080` (DEMO-ONLY: needs ngrok + Twilio number) |
+| `make agentic` | demo with LLM solver agents (`AGENT_MODE=agentic`; add `CU_MODE=real` for real clicks) |
+| `make antigravity-probe` | check if the experimental `antigravity-preview-05-2026` agent is reachable |
 | `make golden` | drive golden path 1→9 via the public API incl. live kill/resume (stub) |
 | `make test` | acceptance tests §12 (9/9, offline) |
 | `make build` / `make lint` | typecheck+build all Vite pages / oxlint |
@@ -73,6 +87,10 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
 
 ## Changelog
 
+- **2026-07-05** — M5 done: agentic layer. `AGENT_MODE=agentic` spawns durable solver agents
+  (`agent/solver/{brain,agent,manager}.py`) that reason with Gemini function-calling and drive
+  our Computer Use; human gate + board unchanged; "Agents at work" UI panel. 15/15 tests; real
+  Gemini planner surfaced $340 live; `antigravity-preview-05-2026` probe reachable.
 - **2026-07-05** — M3 bugfix (confirmed by live call): the bridge hung up right after the
   agent's turn (`session.receive()` ends at each `turn_complete`; the pump treated end-of-turn
   as end-of-call, and pump exceptions were re-raised silently → WS crash). Now re-loops

@@ -30,3 +30,19 @@ def transcript(container_id: str | None, speaker: str, text: str) -> dict:
 
 def resolved(container_id: str) -> dict:
     return {"type": "resolved", "container_id": container_id}
+
+
+def agent_spawned(container_id: str, agent_id: str, goal: str, brain: str) -> dict:
+    return {"type": "agent_spawned", "container_id": container_id,
+            "agent_id": agent_id, "goal": goal, "brain": brain}
+
+
+def agent_step(container_id: str, agent_id: str, tool: str, summary: str,
+               status: str) -> dict:
+    return {"type": "agent_step", "container_id": container_id, "agent_id": agent_id,
+            "tool": tool, "summary": summary, "status": status}
+
+
+def agent_done(container_id: str, agent_id: str, status: str) -> dict:
+    return {"type": "agent_done", "container_id": container_id,
+            "agent_id": agent_id, "status": status}
