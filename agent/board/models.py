@@ -155,7 +155,12 @@ class AgentState(BaseModel):
     goal: str = ""
     steps: list[AgentStep] = Field(default_factory=list)
     brain: str = "scripted"          # scripted | gemini | antigravity
-    previous_interaction_id: str | None = None  # Antigravity/Interactions resume handle
+    # Antigravity / Interactions API durable-reasoning handles (M6): the agent's
+    # reasoning lives server-side; the board keeps only these handles, so a
+    # resumed process continues the SAME interaction by id (load-bearing).
+    previous_interaction_id: str | None = None
+    environment_id: str | None = None      # reused remote sandbox handle
+    pending_call_id: str | None = None      # FunctionCallStep.id awaiting its result
 
 
 class Container(BaseModel):

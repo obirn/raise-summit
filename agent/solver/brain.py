@@ -18,12 +18,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
 logger = logging.getLogger("solver.brain")
 
 AGENT_MODEL = os.environ.get("AGENT_MODEL", "gemini-2.5-flash")
+ANTIGRAVITY_AGENT = os.environ.get("ANTIGRAVITY_AGENT", "antigravity-preview-05-2026")
+
+_JSON_TYPE = {"STRING": "string", "NUMBER": "number", "INTEGER": "integer",
+              "BOOLEAN": "boolean", "OBJECT": "object", "ARRAY": "array"}
 
 # Portal read order when nothing more specific is known.
 _DEFAULT_ORDER = ["terminal", "tms", "carrier", "customs"]
@@ -36,12 +41,20 @@ class BrainContext:
     phase: str                 # "plan" | "execute"
     held_state: dict           # id/status/blockers/dollars_at_risk/hint_system/known_reference
     steps: list[dict]          # [{tool, args, result}] so far (persisted -> resumable)
+    # Antigravity/Interactions durable-reasoning handles (M6; other brains ignore)
+    previous_interaction_id: str | None = None
+    environment_id: str | None = None
+    pending_call_id: str | None = None
 
 
 @dataclass
 class ToolCall:
     name: str
     args: dict
+    # Interaction handles the AntigravityBrain returns for the agent to persist
+    interaction_id: str | None = None
+    environment_id: str | None = None
+    call_id: str | None = None
 
 
 class Brain(Protocol):
@@ -215,7 +228,133 @@ class GeminiFunctionCallingBrain:
         return ToolCall("done", {"summary": text[:120] or "no action"})
 
 
+# ---- Antigravity Interactions API brain (durable reasoning, M6) ------------
+def _s(obj, key, default=None):
+    """Read a field from a step/interaction that may be a pydantic model or dict."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _function_tools() -> list[dict]:
+    """Our tool surface as Interactions API `function` tool declarations."""
+    tools = []
+    for spec in TOOL_SPECS:
+        props = {n: {"type": _JSON_TYPE.get(t, "string"), "description": d}
+                 for n, (t, d) in spec["params"].items()}
+        tools.append({
+            "type": "function", "name": spec["name"], "description": spec["description"],
+            "parameters": {"type": "object", "properties": props, "required": spec["required"]},
+        })
+    return tools
+
+
+_ANTIGRAVITY_INSTRUCTION = (
+    "You are a solver agent unblocking one stuck freight container by operating closed web "
+    "portals. Emit exactly ONE function call for the next action. You cannot see a portal "
+    "without calling read_portal. Surface exactly one binding blocker (surface_blocker); a human "
+    "approves before anything is paid — never pay yourself. If every accessible portal reads "
+    "clean, call mark_unlocatable. The terminal portal shows nothing without the exact reference."
+)
+
+
+class AntigravityBrain:
+    """Planner tier seated in a durable Gemini Interaction (`antigravity-preview-05-2026`).
+
+    The agent's reasoning lives SERVER-SIDE: each decision is a `function_call` handed back at
+    `status=="requires_action"`; we execute it locally and continue via `previous_interaction_id`
+    (no history resend — the server keeps context). The board persists only the interaction
+    handles, so a resumed process continues the SAME reasoning by id — this is the load-bearing
+    durability. On any API error/timeout it falls back to the local Gemini brain so the demo never
+    stalls. Inject `client` (with `.interactions.create/.get`) for offline tests.
+    """
+
+    def __init__(self, client=None, variant: str | None = None, poll_interval: float = 3.0,
+                 max_wait: float | None = None, sleep=time.sleep) -> None:
+        self._client = client
+        self.variant = variant or os.environ.get("ANTIGRAVITY_VARIANT", "agent")  # agent | model
+        self.background = self.variant == "agent"
+        self.poll_interval = poll_interval
+        self.max_wait = max_wait if max_wait is not None else float(os.environ.get("ANTIGRAVITY_MAX_WAIT", "90"))
+        self._sleep = sleep
+        self._fallback_brain: Brain | None = None
+
+    def _client_or_init(self):
+        if self._client is None:
+            from dotenv import load_dotenv
+            from google import genai
+            load_dotenv()
+            self._client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        return self._client
+
+    def _fallback(self) -> Brain:
+        if self._fallback_brain is None:
+            self._fallback_brain = GeminiFunctionCallingBrain()
+        return self._fallback_brain
+
+    def next_action(self, ctx: BrainContext) -> ToolCall:
+        try:
+            return self._decide(ctx)
+        except Exception as e:  # noqa: BLE001 — resilience: never stall the demo
+            logger.warning("AntigravityBrain fell back to Gemini brain: %s", e)
+            return self._fallback().next_action(ctx)
+
+    def _decide(self, ctx: BrainContext) -> ToolCall:
+        client = self._client_or_init()
+        ix = self._poll(client, self._create_or_continue(client, ctx))
+        status = _s(ix, "status")
+        iid, env_id = _s(ix, "id"), (_s(ix, "environment_id") or ctx.environment_id)
+
+        if status == "requires_action":
+            fc = next((s for s in (_s(ix, "steps") or []) if _s(s, "type") == "function_call"), None)
+            if fc is None:
+                raise RuntimeError("requires_action without a function_call step")
+            return ToolCall(_s(fc, "name"), dict(_s(fc, "arguments") or {}),
+                            interaction_id=iid, environment_id=env_id, call_id=_s(fc, "id"))
+        if status == "completed":
+            return ToolCall("done", {"summary": (_s(ix, "output_text") or "")[:200]},
+                            interaction_id=iid, environment_id=env_id)
+        raise RuntimeError(f"interaction ended status={status}")
+
+    def _create_or_continue(self, client, ctx: BrainContext):
+        tools = _function_tools()
+        if not ctx.previous_interaction_id:
+            prompt = (f"{_ANTIGRAVITY_INSTRUCTION}\nGoal: {ctx.goal}\nContainer held state:\n"
+                      + json.dumps(ctx.held_state, default=str))
+            return self._create(client, input=prompt, tools=tools, fresh=True)
+        # continue: feed the just-executed tool's result back as a function_result
+        last = ctx.steps[-1] if ctx.steps else {}
+        result_step = [{"type": "function_result", "call_id": ctx.pending_call_id or "",
+                        "result": last.get("result", {})}]
+        return self._create(client, input=result_step, tools=tools, fresh=False,
+                            previous_interaction_id=ctx.previous_interaction_id,
+                            environment=ctx.environment_id)
+
+    def _create(self, client, *, input, tools, fresh, previous_interaction_id=None, environment=None):
+        kwargs = dict(input=input, tools=tools, store=True, background=self.background)
+        if self.variant == "model":
+            kwargs["model"] = AGENT_MODEL
+        else:
+            kwargs["agent"] = ANTIGRAVITY_AGENT
+            kwargs["environment"] = {"type": "remote"} if fresh else (environment or {"type": "remote"})
+        if previous_interaction_id:
+            kwargs["previous_interaction_id"] = previous_interaction_id
+        return client.interactions.create(**kwargs)
+
+    def _poll(self, client, ix):
+        waited = 0.0
+        while _s(ix, "status") == "in_progress":
+            if waited >= self.max_wait:
+                raise TimeoutError("interaction poll timed out")
+            self._sleep(self.poll_interval)
+            waited += self.poll_interval
+            ix = client.interactions.get(id=_s(ix, "id"))
+        return ix
+
+
 def make_brain(kind: str) -> Brain:
     if kind == "gemini":
         return GeminiFunctionCallingBrain()
+    if kind == "antigravity":
+        return AntigravityBrain()
     return ScriptedBrain()

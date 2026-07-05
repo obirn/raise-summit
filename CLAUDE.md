@@ -106,8 +106,20 @@ key** (`make antigravity-probe` created an interaction). Its agent runs in a rem
 using it to drive our localhost portals needs a public URL — a documented follow-up, not the
 current path (our own solver agents + local CU are the working implementation).
 
-**M4 (next):** audit polish, MASTER_PROMPT.md, hardening; optional real `voice.callback`; optional
-`AntigravityBrain` (needs portals on a public URL).
+**M6 status (built + tested):** the Antigravity **Interactions API is now the load-bearing durable
+brain** (`AGENT_BRAIN=antigravity`). `AntigravityBrain` ([agent/solver/brain.py](agent/solver/brain.py))
+seats the solver agent's *reasoning* inside a durable interaction (`antigravity-preview-05-2026`):
+each decision is a `function_call` handed back at `requires_action`, **our local CU executes it**,
+and we continue via `previous_interaction_id` (server keeps context — no history resent). The board
+persists only the handles (`AgentState.{previous_interaction_id,environment_id,pending_call_id}`), so
+killing the process and resuming continues the **same server-side interaction by id** — remove
+Antigravity and the agent can't resume its reasoning (that's what makes it load-bearing, not a
+bolt-on). Two-tier still holds: Antigravity plans, our Computer Use clicks (invariant 1). Falls back
+to the local Gemini brain on any API error (demo never stalls); `ANTIGRAVITY_VARIANT=agent|model`
+lever. Verified live (real handoff `read_portal(DET-4471-B)`) + offline resume-by-id (`FakeInteractions`);
+`make test` **17/17**. Run: `make agentic AGENT_BRAIN=antigravity` (`CU_MODE=real` for real clicks).
+
+**M4 (next):** audit polish, MASTER_PROMPT.md, hardening; optional real `voice.callback`.
 
 ---
 

@@ -90,6 +90,10 @@ class SolverAgent:
                 phase=phase, held_state=self._held_state(c),
                 steps=[{"tool": s.tool, "args": s.args, "result": s.result}
                        for s in (c.agent.steps if c.agent else [])],
+                # durable Antigravity handles (resume the SAME server-side reasoning)
+                previous_interaction_id=c.agent.previous_interaction_id if c.agent else None,
+                environment_id=c.agent.environment_id if c.agent else None,
+                pending_call_id=c.agent.pending_call_id if c.agent else None,
             )
             call = self.brain.next_action(ctx)          # LLM / FSM — outside lock
             with self.lock:
@@ -97,7 +101,8 @@ class SolverAgent:
                 self._record(call, result, terminal_status)
             summary = self._summary(call, result)
             self._emit(events.agent_step(self.container_id, self.agent_id, call.name,
-                                         summary, (terminal_status or AgentStatus.planning).value))
+                                         summary, (terminal_status or AgentStatus.planning).value,
+                                         interaction_id=call.interaction_id))
             if terminal_status is not None:
                 self._emit(events.agent_done(self.container_id, self.agent_id,
                                              terminal_status.value))
@@ -133,6 +138,13 @@ class SolverAgent:
         c.agent.steps.append(AgentStep(ts=_now(), tool=call.name, args=call.args,
                                        result=result, summary=self._summary(call, result)))
         c.agent.status = terminal_status or AgentStatus.planning
+        # persist the durable Antigravity handles so a resumed process continues
+        # the SAME server-side interaction by id (load-bearing durability).
+        if call.interaction_id is not None:
+            c.agent.previous_interaction_id = call.interaction_id
+        if call.environment_id is not None:
+            c.agent.environment_id = call.environment_id
+        c.agent.pending_call_id = call.call_id
         self._board().upsert(c)
 
     def _summary(self, call: ToolCall, result: dict) -> str:

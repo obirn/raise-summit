@@ -52,6 +52,7 @@ type Agent = {
   brain: string
   status: string
   step: string
+  interaction_id?: string | null
 }
 
 const AGENT_TONE: Record<string, string> = {
@@ -107,6 +108,7 @@ export function CoordinatorApp() {
             [msg.agent_id]: {
               ...(prev[msg.agent_id] ?? { agent_id: msg.agent_id, container_id: msg.container_id, brain: '' }),
               status: msg.status, step: msg.summary,
+              interaction_id: msg.interaction_id ?? prev[msg.agent_id]?.interaction_id,
             } as Agent,
           }))
         } else if (msg.type === 'agent_done') {
@@ -227,6 +229,11 @@ export function CoordinatorApp() {
                     <span className="font-mono text-[10px] uppercase tracking-wider">{a.status}</span>
                   </div>
                   <p className="mt-1 font-mono text-[10px] text-slate-500">{a.agent_id} · {a.brain}</p>
+                  {a.interaction_id && (
+                    <p className="mt-1 font-mono text-[10px] text-cyan-500" title="Reasoning held server-side; resumable by id">
+                      ⛓ durable via Antigravity · {a.interaction_id}
+                    </p>
+                  )}
                   <p className="mt-2 text-sm text-slate-300">
                     {a.status === 'planning' && <span className="animate-pulse">▸ </span>}
                     {a.step}

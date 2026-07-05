@@ -11,6 +11,7 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
 | M2 | Real Gemini Computer Use + Playwright; carrier/terminal portals | ✅ done | live full golden path under `CU_MODE=real`; `make cu-smoke` |
 | M3 | Real Live Translate voice — Twilio↔Gemini-Live bridge integrated | ✅ done | phone-tested (user) + live push path `field-truth`→`resolving`; 12/12 tests |
 | M5 | Agentic layer — orchestrator spawns durable solver agents that drive Computer Use | ✅ done | 15/15 tests; real Gemini planner surfaced $340 live; Antigravity API reachable |
+| M6 | Antigravity Interactions API = the *load-bearing* durable brain (resume-by-id) | ✅ done | 17/17 tests (offline resume-by-id); real `antigravity-preview-05-2026` handoff live |
 | M4 | Audit polish, hardening, MASTER_PROMPT.md, final pass | ⬜ next | — |
 
 ## What works today (verified)
@@ -37,10 +38,16 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
   Two-tier: planner (`AGENT_MODEL`) decides, CU worker clicks. `ScriptedBrain` keeps it offline
   for tests; the real Gemini brain planned `read terminal(DET-4471-B)`→`surface $340` live. The
   deterministic state machine stays as the `AGENT_MODE=deterministic` fallback (12 tests).
-- **Antigravity**: the *product* is an IDE (no backend SDK), but the experimental
-  `client.interactions.create(agent="antigravity-preview-05-2026", environment=…)` **is reachable
-  with our key** (probe created an interaction). Its managed agent runs in a remote sandbox, so
-  driving our localhost portals with it needs a public URL — a follow-up, not the current path.
+- **Antigravity as the load-bearing durable brain** (`AGENT_BRAIN=antigravity`): the solver agent's
+  *reasoning* lives inside a durable Gemini Interaction (`antigravity-preview-05-2026`). Each
+  decision is a `function_call` handed back at `requires_action`; **our local CU executes it**, and
+  we continue via `previous_interaction_id` (server keeps context, no history resent). The board
+  persists only the interaction handles — so **kill the process and the agent's reasoning survives
+  only because we resume the same server-side interaction by id**. That's the primitive, load-bearing
+  (not bolted on): remove it and the agent can't resume its reasoning across the horizon. Verified
+  live (real handoff: `read_portal(DET-4471-B)`, real interaction/environment ids) + offline
+  (`FakeInteractions` proves resume-by-id with no history resend). Falls back to the local Gemini
+  brain on any API error so the demo never stalls. `ANTIGRAVITY_VARIANT=agent|model` reliability lever.
 
 ## Commands
 
@@ -87,6 +94,12 @@ _See [CLAUDE.md](CLAUDE.md) for architecture/invariants and [MASTER_PROMPT] spec
 
 ## Changelog
 
+- **2026-07-05** — M6 done: Antigravity Interactions API made the *load-bearing* durable brain.
+  `AntigravityBrain` (`agent/solver/brain.py`) seats the agent's reasoning in a durable interaction,
+  continues by `previous_interaction_id` (no history resend), executes tools locally via CU; board
+  holds only the handles → kill/resume continues the SAME server-side interaction. Verified live
+  (real `antigravity-preview-05-2026` function-call handoff) + offline resume-by-id. 17/17 tests.
+  Run: `make agentic AGENT_BRAIN=antigravity`.
 - **2026-07-05** — M5 done: agentic layer. `AGENT_MODE=agentic` spawns durable solver agents
   (`agent/solver/{brain,agent,manager}.py`) that reason with Gemini function-calling and drive
   our Computer Use; human gate + board unchanged; "Agents at work" UI panel. 15/15 tests; real
